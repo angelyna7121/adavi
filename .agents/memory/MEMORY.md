@@ -1,0 +1,2 @@
+- [Tesseract.js v7 Node interop](tesseract-ocr.md) — use createRequire CJS interop, TESS_CACHE=/tmp/tessdata_cache, worker boots in ~900ms
+- [PDF scanned OCR pipeline](tesseract-ocr.md) — ImageMagick `magick -density 200 pdf[N] PNG:-` pipes to Tesseract; GS must be installed in Nix
