@@ -14,7 +14,7 @@ import { checkDatabaseConnection } from "./db/prisma";
 // ── Validate environment at startup ───────────────────────────
 validateConfig();
 
-const app = express();
+export const app = express();
 const httpServer = createServer(app);
 
 // ── Stripe status normalizer ───────────────────────────────────
@@ -229,7 +229,7 @@ app.use((req, res, next) => {
   next();
 });
 
-(async () => {
+export const ready = (async () => {
   const { runMigrations } = await import("./db/migrate");
   await runMigrations();
   await checkDatabaseConnection();
@@ -238,18 +238,28 @@ app.use((req, res, next) => {
 
   // Frontend must be registered BEFORE notFoundHandler so non-API routes
   // fall through to the React app (index.html), not the JSON 404 handler.
+  // Vercel serves dist/public directly, so the serverless function only mounts API routes.
   if (appConfig.isProd) {
-    serveStatic(app);
-  } else {
+    if (!process.env.VERCEL) serveStatic(app);
+  } else if (!process.env.VERCEL) {
     const { setupVite } = await import("./vite");
     await setupVite(httpServer, app);
   }
 
   app.use(notFoundHandler);
   app.use(errorHandler);
-
-  httpServer.listen(
-    { port: appConfig.port, host: "0.0.0.0", reusePort: true },
-    () => { log(`serving on port ${appConfig.port}`); }
-  );
 })();
+
+if (!process.env.VERCEL) {
+  ready.then(() => {
+    httpServer.listen(
+      { port: appConfig.port, host: "0.0.0.0", reusePort: true },
+      () => { log(`serving on port ${appConfig.port}`); }
+    );
+  }).catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
+
+export default app;
