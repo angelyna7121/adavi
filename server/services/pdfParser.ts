@@ -21,7 +21,7 @@ import { classifyLabel, inferCategoryExported as inferCategory, parseAmount } fr
 import { ocrScannedPdfBuffer } from "./ocrParser.js";
 
 // pdf-parse v2 — class-based API, CJS module.
-const _require = createRequire(import.meta.url);
+const _require = createRequire(`${process.cwd()}/package.json`);
 const { PDFParse } = _require("pdf-parse") as {
   PDFParse: new (opts: { data: Buffer | Uint8Array }) => {
     load(): Promise<void>;

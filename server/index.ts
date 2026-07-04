@@ -9,7 +9,7 @@ import { passport } from "./auth";
 import { storage } from "./services/storage";
 import { validateConfig, database, sessionConfig, stripeConfig, appConfig } from "./config";
 import { errorHandler, notFoundHandler } from "./lib/errorHandler";
-import { checkDatabaseConnection } from "./db/prisma";
+import { checkDatabaseConnection } from "./db";
 
 // ── Validate environment at startup ───────────────────────────
 validateConfig();
@@ -239,7 +239,7 @@ export const ready = (async () => {
   // Frontend must be registered BEFORE notFoundHandler so non-API routes
   // fall through to the React app (index.html), not the JSON 404 handler.
   // Vercel serves dist/public directly, so the serverless function only mounts API routes.
-  if (appConfig.isProd) {
+  if (process.env.NODE_ENV === "production") {
     if (!process.env.VERCEL) serveStatic(app);
   } else if (!process.env.VERCEL) {
     const { setupVite } = await import("./vite");

@@ -16,7 +16,7 @@ import path from "path";
 import fs from "fs/promises";
 
 const execFileAsync = promisify(execFile);
-const _require = createRequire(import.meta.url);
+const _require = createRequire(`${process.cwd()}/package.json`);
 
 // ── Tesseract.js v7 — CJS import ─────────────────────────────────────────────
 // tesseract.js exports `{ createWorker, ... }` as CJS default or named exports.

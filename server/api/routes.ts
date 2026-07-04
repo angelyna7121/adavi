@@ -38,7 +38,7 @@ function isPro(user: any): boolean {
 }
 
 function safeUser(user: any): SafeUser {
-  const { passwordHash, googleId, ...safe } = user;
+  const { passwordHash, ...safe } = user;
   return safe;
 }
 

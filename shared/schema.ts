@@ -21,7 +21,7 @@ export const insertUserSchema = createInsertSchema(users)
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
-export type SafeUser = Omit<User, "passwordHash" | "googleId">;
+export type SafeUser = Omit<User, "passwordHash">;
 
 // ── User Profiles ──────────────────────────────────────────────
 export const userProfiles = pgTable("user_profiles", {

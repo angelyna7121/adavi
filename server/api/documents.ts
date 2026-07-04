@@ -23,7 +23,7 @@ import { parseFinancialText } from "../services/pdfParser";
 import { extractFinancialDocument, OpenAINotConfiguredError } from "../services/financialDocumentExtractor";
 import { classifyItem } from "../services/classificationEngine";
 import { createRequire } from "module";
-const _req = createRequire(import.meta.url);
+const _req = createRequire(`${process.cwd()}/package.json`);
 const XLSX = _req("xlsx") as typeof import("xlsx");
 
 // ── Constants ─────────────────────────────────────────────────────────────────
