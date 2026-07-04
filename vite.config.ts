@@ -30,6 +30,18 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (/[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id)) return "react";
+          if (id.includes("/node_modules/@radix-ui/")) return "radix-ui";
+          if (/[\\/]node_modules[\\/](recharts|framer-motion)[\\/]/.test(id)) return "visualization";
+          if (/[\\/]node_modules[\\/](xlsx|tesseract\\.js|pdf-parse)[\\/]/.test(id)) return "documents";
+          return "vendor";
+        },
+      },
+    },
   },
   server: {
     fs: {
