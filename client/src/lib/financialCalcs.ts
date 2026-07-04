@@ -143,5 +143,5 @@ export function computeMix(
 }
 
 // Re-export types for convenience
-export type { DividendType, DividendMode };
+export type { DividendType };
 export { calculateOntarioOwnerCompensation2026 };
