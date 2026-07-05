@@ -31,6 +31,8 @@ export type ItemType = "asset" | "liability";
 export interface ParsedItem {
   tempId: string;
   name: string;
+  /** Account/institution column captured separately from the item description. */
+  accountName?: string;
   category: string;
   type: ItemType;
   /** Whole dollars, always positive. */
@@ -361,13 +363,7 @@ function processRows({ cols, headers, dataRows }: RowProcessorOptions): {
              : cols.account     >= 0 ? cell(cols.account)
              : cell(0);
 
-    // Append account name when both description and account columns exist
-    if (cols.account >= 0 && cols.description >= 0) {
-      const acct = cell(cols.account);
-      if (acct && acct.toLowerCase() !== name.toLowerCase()) {
-        name = name ? `${name} — ${acct}` : acct;
-      }
-    }
+    const accountName = cols.account >= 0 ? cell(cols.account) : "";
 
     if (!name) { skipped++; continue; }
 
@@ -460,6 +456,7 @@ function processRows({ cols, headers, dataRows }: RowProcessorOptions): {
     items.push({
       tempId: tempId(),
       name,
+      accountName: accountName || undefined,
       category,
       type,
       amount: absAmount,

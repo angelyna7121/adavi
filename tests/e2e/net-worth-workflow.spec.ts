@@ -97,14 +97,14 @@ async function uploadSampleStatement(page: Page) {
   ]));
   expect(parsePayload.items).toEqual(expect.arrayContaining([
     expect.objectContaining({
-      name: "RBC Chequing — RBC",
+      name: "RBC Chequing",
       category: "Bank Accounts",
       type: "asset",
       amount: 12500,
       institutionName: "RBC",
     }),
     expect.objectContaining({
-      name: "TD Mortgage — TD",
+      name: "TD Mortgage",
       category: "Mortgages",
       type: "liability",
       amount: 320000,
@@ -113,8 +113,8 @@ async function uploadSampleStatement(page: Page) {
   ]));
 
   await expect(page.getByText("Review Extracted Line Items")).toBeVisible();
-  await expect(page.locator('[data-testid^="input-name-"]').nth(0)).toHaveValue("RBC Chequing — RBC");
-  await expect(page.locator('[data-testid^="input-name-"]').nth(1)).toHaveValue("TD Mortgage — TD");
+  await expect(page.locator('[data-testid^="input-name-"]').nth(0)).toHaveValue("RBC Chequing");
+  await expect(page.locator('[data-testid^="input-name-"]').nth(1)).toHaveValue("TD Mortgage");
   await expect(page.locator('[data-testid^="input-institution-"]').nth(0)).toHaveValue("RBC");
   await expect(page.locator('[data-testid^="input-institution-"]').nth(1)).toHaveValue("TD");
   await expect(page.locator('[data-testid^="select-category-"]').nth(0)).toHaveValue("Bank Accounts");
@@ -184,14 +184,14 @@ test.describe("Net Worth workflow", () => {
     await expect(page.getByText("Statement saved")).toBeVisible();
     await expect.poll(async () => getSavedNetWorthRows(email)).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        name: "RBC Chequing — RBC",
+        name: "RBC Chequing",
         category: "Bank Accounts",
         type: "asset",
         amount: 12500,
         institution_name: "RBC",
       }),
       expect.objectContaining({
-        name: "TD Mortgage — TD",
+        name: "TD Mortgage",
         category: "Mortgages",
         type: "liability",
         amount: 320000,
