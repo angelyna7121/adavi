@@ -161,7 +161,8 @@ test.describe("Net Worth workflow", () => {
 
     await page.getByTestId("button-save-net-worth").click();
     await expect(page.getByTestId("net-worth-upgrade-modal")).toBeVisible();
-    await page.keyboard.press("Escape");
+    await page.getByTestId("button-upgrade-maybe-later").click();
+    await expect(page.getByTestId("net-worth-upgrade-modal")).toBeHidden();
 
     await page.getByTestId("button-print-download").click();
     await expect(page.getByTestId("net-worth-upgrade-modal")).toBeVisible();
@@ -182,7 +183,7 @@ test.describe("Net Worth workflow", () => {
     await editReviewAndGenerate(page);
 
     await page.getByTestId("button-save-net-worth").click();
-    await expect(page.getByText("Statement saved")).toBeVisible();
+    await expect(page.getByText("Statement saved", { exact: true })).toBeVisible();
     await expect.poll(async () => getSavedNetWorthRows(email)).toEqual(expect.arrayContaining([
       expect.objectContaining({
         name: "RBC Chequing",
