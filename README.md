@@ -97,7 +97,7 @@ adavi/
 │   │   └── crypto.ts           # scrypt password hashing
 │   ├── db/
 │   │   ├── migrate.ts          # Auto-migration runner (runs at startup)
-│   │   └── prisma.ts           # DB connection health check
+│   │   └── index.ts            # Drizzle client + DB connection health check
 │   ├── lib/
 │   │   └── errorHandler.ts     # Express error + 404 handlers
 │   └── services/
@@ -106,8 +106,6 @@ adavi/
 ├── shared/
 │   └── schema.ts               # Drizzle schema + Zod types shared by client and server
 │
-├── prisma/
-│   └── migrations/             # SQL migration files
 │
 ├── script/
 │   └── build.ts                # Production build script
@@ -260,7 +258,7 @@ This introspects `shared/schema.ts` and pushes any changes directly to the datab
 
 ### Automatic Migrations (Production)
 
-The server runs `server/db/migrate.ts` automatically at startup before accepting requests. Migration files live in `prisma/migrations/`. You do not need to run migrations manually on deploy — they run on boot.
+The server runs `server/db/migrate.ts` automatically at startup before accepting requests. You do not need to run migrations manually on deploy — they run on boot.
 
 ### Schema Overview
 
