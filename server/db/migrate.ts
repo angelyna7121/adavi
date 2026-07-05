@@ -17,6 +17,16 @@ export async function runMigrations() {
         created_at TIMESTAMP NOT NULL DEFAULT NOW()
       );
 
+      -- Express session store used by connect-pg-simple.
+      -- Keep this here so Vercel's bundled server does not need connect-pg-simple/table.sql at runtime.
+      CREATE TABLE IF NOT EXISTS "session" (
+        "sid" varchar NOT NULL COLLATE "default",
+        "sess" json NOT NULL,
+        "expire" timestamp(6) NOT NULL,
+        CONSTRAINT "session_pkey" PRIMARY KEY ("sid") NOT DEFERRABLE INITIALLY IMMEDIATE
+      );
+      CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire");
+
       -- User Profiles
       CREATE TABLE IF NOT EXISTS user_profiles (
         id SERIAL PRIMARY KEY,
