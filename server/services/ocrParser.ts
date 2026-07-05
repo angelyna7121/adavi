@@ -18,18 +18,24 @@ import fs from "fs/promises";
 const execFileAsync = promisify(execFile);
 const _require = createRequire(`${process.cwd()}/package.json`);
 
-// ── Tesseract.js v7 — CJS import ─────────────────────────────────────────────
-// tesseract.js exports `{ createWorker, ... }` as CJS default or named exports.
-// Use createRequire so tsx/ESM interop works correctly.
-const tesseractMod = _require("tesseract.js");
-const createWorker: (
+type CreateWorker = (
   lang: string,
   oem?: number,
   opts?: Record<string, unknown>
 ) => Promise<{
   recognize: (img: Buffer | string) => Promise<{ data: { text: string } }>;
   terminate: () => Promise<void>;
-}> = tesseractMod.createWorker ?? tesseractMod.default?.createWorker ?? tesseractMod;
+}>;
+
+let createWorkerPromise: Promise<CreateWorker> | null = null;
+
+function getCreateWorker(): Promise<CreateWorker> {
+  createWorkerPromise ??= Promise.resolve().then(() => {
+    const tesseractMod = _require("tesseract.js");
+    return tesseractMod.createWorker ?? tesseractMod.default?.createWorker ?? tesseractMod;
+  });
+  return createWorkerPromise;
+}
 
 // Language data cache directory — persisted across restarts
 const TESS_CACHE = path.join(os.tmpdir(), "tessdata_cache");
@@ -48,6 +54,7 @@ const DENSITY = 200;
  */
 async function tesseractRecognize(imgBuf: Buffer): Promise<string> {
   await fs.mkdir(TESS_CACHE, { recursive: true });
+  const createWorker = await getCreateWorker();
   const worker = await createWorker("eng", 1, {
     cachePath: TESS_CACHE,
     // Suppress verbose logging from the worker
