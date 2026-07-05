@@ -8,7 +8,7 @@
  * Both functions return raw text ready to be fed into parseFinancialText().
  */
 
-import { createRequire } from "module";
+import { createWorker } from "tesseract.js";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import os from "os";
@@ -16,7 +16,6 @@ import path from "path";
 import fs from "fs/promises";
 
 const execFileAsync = promisify(execFile);
-const _require = createRequire(`${process.cwd()}/package.json`);
 
 type CreateWorker = (
   lang: string,
@@ -27,14 +26,8 @@ type CreateWorker = (
   terminate: () => Promise<void>;
 }>;
 
-let createWorkerPromise: Promise<CreateWorker> | null = null;
-
 function getCreateWorker(): Promise<CreateWorker> {
-  createWorkerPromise ??= Promise.resolve().then(() => {
-    const tesseractMod = _require("tesseract.js");
-    return tesseractMod.createWorker ?? tesseractMod.default?.createWorker ?? tesseractMod;
-  });
-  return createWorkerPromise;
+  return Promise.resolve(createWorker as unknown as CreateWorker);
 }
 
 // Language data cache directory — persisted across restarts
