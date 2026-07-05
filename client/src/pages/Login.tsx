@@ -4,7 +4,6 @@ import { z } from "zod";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -27,11 +26,6 @@ export default function Login() {
   const { user, login } = useAuth();
   const [, navigate] = useLocation();
   const [urlError, setUrlError] = useState<string | null>(null);
-
-  const { data: providers } = useQuery<{ google: boolean }>({
-    queryKey: ["/api/auth/providers"],
-    staleTime: Infinity,
-  });
 
   useEffect(() => { if (user) navigate("/dashboard"); }, [user]);
   useEffect(() => {
@@ -69,26 +63,22 @@ export default function Login() {
             </div>
           )}
 
-          {providers?.google && (
-            <>
-              <a href="/api/auth/google" data-testid="button-google-login">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full flex items-center justify-center gap-2.5 h-11 font-medium"
-                  style={{ background: "rgba(255,255,255,0.05)", borderColor: BORDER, color: "white" }}
-                >
-                  <SiGoogle className="w-4 h-4 text-[#4285F4]" />
-                  Continue with Google
-                </Button>
-              </a>
-              <div className="flex items-center gap-3 my-5">
-                <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.08)" }} />
-                <span className="text-xs" style={{ color: MUTED }}>or</span>
-                <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.08)" }} />
-              </div>
-            </>
-          )}
+          <a href="/api/auth/google" data-testid="button-google-login">
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full flex items-center justify-center gap-2.5 h-11 font-medium hover:bg-white/10"
+              style={{ background: "rgba(255,255,255,0.05)", borderColor: BORDER, color: "white" }}
+            >
+              <SiGoogle className="w-4 h-4 text-[#4285F4]" />
+              Continue with Google
+            </Button>
+          </a>
+          <div className="flex items-center gap-3 my-5">
+            <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.08)" }} />
+            <span className="text-xs" style={{ color: MUTED }}>or</span>
+            <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.08)" }} />
+          </div>
 
           <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
