@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ProtectedRoute } from "@/lib/protected-route";
+import { SpeedInsights } from "@vercel/speed-insights/react";
 import NotFound from "@/pages/not-found";
 import Landing from "@/pages/Landing";
 import Dashboard from "@/pages/Dashboard";
@@ -88,6 +89,7 @@ function App() {
         <ErrorBoundary>
           <Router />
         </ErrorBoundary>
+        <SpeedInsights />
       </TooltipProvider>
     </QueryClientProvider>
   );
