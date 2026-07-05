@@ -15,7 +15,16 @@
  *   - needsReview: set when type was inferred, not explicit
  */
 
-import * as XLSX from "xlsx";
+import { createRequire } from "module";
+import type * as XLSXTypes from "xlsx";
+
+const _require = createRequire(`${process.cwd()}/package.json`);
+let xlsxModule: typeof XLSXTypes | null = null;
+
+function getXLSX(): typeof XLSXTypes {
+  xlsxModule ??= _require("xlsx") as typeof XLSXTypes;
+  return xlsxModule;
+}
 
 export type ItemType = "asset" | "liability";
 
@@ -549,7 +558,8 @@ export function parseCSVBuffer(buf: Buffer): ParseResult {
 
 /** Parse an XLSX buffer into reviewable ParsedItems using the first sheet. */
 export function parseXLSXBuffer(buf: Buffer): ParseResult {
-  let wb: XLSX.WorkBook;
+  const XLSX = getXLSX();
+  let wb: XLSXTypes.WorkBook;
   try {
     wb = XLSX.read(buf, { type: "buffer", cellDates: false });
   } catch {
