@@ -2,14 +2,16 @@ import { db } from "../db";
 import {
   users, userProfiles, scenarios, waitlistEmails, analyticsEvents,
   netWorthStatements, netWorthItems, incomeStrategies, uploadedDocuments, reports,
-  aiExtractions, annotations,
+  aiExtractions, annotations, investorProfiles, reportSnapshots,
   type InsertScenario, type UpdateScenarioRequest, type Scenario,
   type User, type UserProfile, type WaitlistEmail,
   type NetWorthStatement, type InsertNetWorthStatement,
   type NetWorthItem, type InsertNetWorthItem,
+  type InvestorProfile, type InsertInvestorProfile,
   type IncomeStrategy, type InsertIncomeStrategy,
   type UploadedDocument, type InsertUploadedDocument,
   type Report, type InsertReport,
+  type ReportSnapshot, type InsertReportSnapshot,
   type AiExtraction, type InsertAiExtraction,
   type Annotation, type InsertAnnotation,
 } from "@shared/schema";
@@ -43,10 +45,12 @@ export interface IStorage {
   getOrCreateNetWorthStatement(userId: number): Promise<NetWorthStatement>;
   getNetWorthItems(statementId: number): Promise<NetWorthItem[]>;
   addNetWorthItem(data: InsertNetWorthItem): Promise<NetWorthItem>;
+  replaceNetWorthItems(statementId: number, userId: number, items: InsertNetWorthItem[]): Promise<NetWorthItem[]>;
   /** Returns null if item not found or does not belong to userId. */
   updateNetWorthItem(id: number, userId: number, updates: Partial<InsertNetWorthItem>): Promise<NetWorthItem | null>;
   deleteNetWorthItem(id: number, userId: number): Promise<void>;
   updateNetWorthTotals(statementId: number, totalAssets: number, totalLiabilities: number): Promise<NetWorthStatement>;
+  upsertInvestorProfiles(userId: number, profiles: InsertInvestorProfile[]): Promise<InvestorProfile[]>;
 
   // Income Strategies
   getIncomeStrategies(userId: number): Promise<IncomeStrategy[]>;
@@ -68,6 +72,7 @@ export interface IStorage {
   getReports(userId: number): Promise<Report[]>;
   getReport(id: number, userId: number): Promise<Report | undefined>;
   createReport(data: InsertReport): Promise<Report>;
+  createReportSnapshot(data: InsertReportSnapshot): Promise<ReportSnapshot>;
   deleteReport(id: number, userId: number): Promise<void>;
   getIncomeStrategyById(id: number): Promise<IncomeStrategy | undefined>;
 
@@ -227,6 +232,13 @@ export class DatabaseStorage implements IStorage {
     return item;
   }
 
+  async replaceNetWorthItems(statementId: number, userId: number, items: InsertNetWorthItem[]): Promise<NetWorthItem[]> {
+    await db.delete(netWorthItems)
+      .where(and(eq(netWorthItems.statementId, statementId), eq(netWorthItems.userId, userId)));
+    if (items.length === 0) return [];
+    return db.insert(netWorthItems).values(items).returning();
+  }
+
   async updateNetWorthItem(id: number, userId: number, updates: Partial<InsertNetWorthItem>): Promise<NetWorthItem | null> {
     // Strip userId from updates — ownership is enforced via WHERE clause, not overwritten
     const { userId: _uid, ...safeUpdates } = updates as any;
@@ -254,6 +266,36 @@ export class DatabaseStorage implements IStorage {
       .where(eq(netWorthStatements.id, statementId))
       .returning();
     return s;
+  }
+
+  async upsertInvestorProfiles(userId: number, profiles: InsertInvestorProfile[]): Promise<InvestorProfile[]> {
+    const names = new Map<string, InsertInvestorProfile>();
+    for (const profile of profiles) {
+      const key = `${profile.investorName.trim().toLowerCase()}::${profile.familyName ?? ""}`;
+      if (profile.investorName.trim()) names.set(key, profile);
+    }
+    const created: InvestorProfile[] = [];
+    for (const profile of names.values()) {
+      const [existing] = await db
+        .select()
+        .from(investorProfiles)
+        .where(and(
+          eq(investorProfiles.userId, userId),
+          eq(investorProfiles.investorName, profile.investorName),
+        ))
+        .limit(1);
+      if (existing) {
+        const [updated] = await db.update(investorProfiles)
+          .set({ familyName: profile.familyName ?? existing.familyName, updatedAt: new Date() })
+          .where(eq(investorProfiles.id, existing.id))
+          .returning();
+        created.push(updated);
+      } else {
+        const [row] = await db.insert(investorProfiles).values(profile).returning();
+        created.push(row);
+      }
+    }
+    return created;
   }
 
   // ── Income Strategies ────────────────────────────────────
@@ -338,6 +380,11 @@ export class DatabaseStorage implements IStorage {
     return r;
   }
 
+  async createReportSnapshot(data: InsertReportSnapshot): Promise<ReportSnapshot> {
+    const [snapshot] = await db.insert(reportSnapshots).values(data).returning();
+    return snapshot;
+  }
+
   async deleteReport(id: number, userId: number): Promise<void> {
     await db.delete(reports)
       .where(and(eq(reports.id, id), eq(reports.userId, userId)));
@@ -390,6 +437,8 @@ export class DatabaseStorage implements IStorage {
     // Delete in FK-safe order. aiExtractions + annotations cascade from uploadedDocuments.
     await db.delete(analyticsEvents).where(eq(analyticsEvents.userId, userId));
     await db.delete(reports).where(eq(reports.userId, userId));
+    await db.delete(reportSnapshots).where(eq(reportSnapshots.userId, userId));
+    await db.delete(investorProfiles).where(eq(investorProfiles.userId, userId));
     await db.delete(annotations).where(eq(annotations.userId, userId));
     await db.delete(aiExtractions).where(eq(aiExtractions.userId, userId));
     await db.delete(uploadedDocuments).where(eq(uploadedDocuments.userId, userId));

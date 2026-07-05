@@ -66,6 +66,10 @@ function requireAuth(req: Request, res: Response, next: NextFunction) {
   res.status(401).json({ message: "Unauthorized" });
 }
 
+function isPaid(user: any): boolean {
+  return user?.subscriptionStatus === "active" && (user?.planType === "monthly" || user?.planType === "annual");
+}
+
 /** Check that the first bytes of a buffer match the expected signature. */
 function verifyMagicBytes(buf: Buffer, ext: string): boolean {
   const magic = MAGIC_BYTES[ext];
@@ -93,6 +97,76 @@ async function ensureUserDir(userId: number): Promise<string> {
 /** Human-readable MIME list for error messages. */
 const ALLOWED_MIME_LIST = [...new Set(Object.values(ALLOWED_MIMES))].join(", ").toUpperCase();
 
+async function parseFinancialFile(file: Express.Multer.File, ext: string): Promise<{
+  result: Record<string, unknown>;
+  documentText: string;
+}> {
+  let result: Record<string, unknown>;
+  let documentText = "";
+
+  if (ext === "xlsx") {
+    result = parseXLSXBuffer(file.buffer) as unknown as Record<string, unknown>;
+    try {
+      const XLSX = getXLSX();
+      const wb = XLSX.read(file.buffer, { type: "buffer" });
+      documentText = wb.SheetNames.map(name => XLSX.utils.sheet_to_csv(wb.Sheets[name])).join("\n");
+    } catch { /* best effort */ }
+  } else if (ext === "pdf") {
+    result = await parsePDFBuffer(file.buffer) as unknown as Record<string, unknown>;
+    documentText = await extractPdfText(file.buffer);
+  } else if (ext === "jpg" || ext === "png") {
+    const ocrText = await ocrImageBuffer(file.buffer);
+    documentText = ocrText;
+    const parsed = parseFinancialText(ocrText);
+    result = {
+      imageOnly: false,
+      ocrUsed: true,
+      items: parsed.items,
+      totalRows: parsed.totalRows,
+      skippedRows: parsed.skippedRows,
+      warnings: [`Text recognized from ${ext.toUpperCase()} image via OCR. Review values before saving.`, ...parsed.warnings],
+    } as unknown as Record<string, unknown>;
+  } else {
+    result = parseCSVBuffer(file.buffer) as unknown as Record<string, unknown>;
+    documentText = file.buffer.toString("utf-8");
+  }
+
+  return { result, documentText };
+}
+
+function toStatementItems(result: Record<string, unknown>, originalName: string, documentId: number | null) {
+  const rawItems = Array.isArray(result.items) ? result.items as any[] : [];
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  return rawItems.map((item) => {
+    const rawConfidence = typeof item.confidenceScore === "number" ? item.confidenceScore : item.needsReview ? 0.6 : 0.9;
+    const confidence = Math.round(rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence);
+    const currentValue = Math.max(0, Math.round(Number(item.amount ?? item.currentValue ?? 0)));
+    const priorValue = Math.max(0, Math.round(Number(item.priorValue ?? 0)));
+    return {
+      tempId: item.tempId ?? crypto.randomUUID(),
+      documentId,
+      sourceType: "parsed",
+      investorName: item.investorName ?? "Primary Investor",
+      familyName: item.familyName ?? "",
+      institutionName: item.institutionName ?? item.accountName ?? originalName.replace(/\.[^.]+$/, ""),
+      type: item.type === "liability" ? "liability" : "asset",
+      category: item.category ?? "Other",
+      subcategory: item.subcategory ?? "",
+      name: item.name ?? item.description ?? "Review item",
+      amount: currentValue,
+      priorValue,
+      changeAmount: Math.round(Number(item.changeAmount ?? (currentValue - priorValue))),
+      reportingPeriod: item.reportingPeriod ?? item.reportingDate ?? currentMonth,
+      confidenceScore: Math.min(100, Math.max(0, confidence)),
+      verified: false,
+      sourceTextSnippet: item.sourceTextSnippet ?? "",
+      notes: item.notes ?? item.reviewReason ?? "",
+      needsReview: !!item.needsReview || confidence < 70,
+      source: originalName,
+    };
+  });
+}
+
 // ── Multer configuration ──────────────────────────────────────────────────────
 
 const upload = multer({
@@ -115,6 +189,108 @@ const upload = multer({
 // ── Route registration ────────────────────────────────────────────────────────
 
 export function registerDocumentRoutes(app: Express) {
+
+  app.post(
+    "/api/net-worth/parse",
+    requireAuth,
+    (req: Request, res: Response, next: NextFunction) => {
+      upload.array("files", MAX_FILES_PER_REQUEST)(req, res, (err) => {
+        if (err instanceof multer.MulterError) {
+          if (err.code === "LIMIT_FILE_SIZE") {
+            return res.status(413).json({ message: `File too large — maximum size is ${MAX_FILE_SIZE_BYTES / 1024 / 1024} MB per file.` });
+          }
+          if (err.code === "LIMIT_FILE_COUNT") {
+            return res.status(400).json({ message: `Too many files — maximum ${MAX_FILES_PER_REQUEST} files per request.` });
+          }
+          return res.status(400).json({ message: "This file type is not supported." });
+        }
+        if (err) return res.status(400).json({ message: "The file could not be parsed. Please try again." });
+        next();
+      });
+    },
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const user = req.user as any;
+        const files = req.files as Express.Multer.File[];
+        if (!files || files.length === 0) {
+          return res.status(400).json({ message: "No files received. Send files in the 'files' field." });
+        }
+
+        const paid = isPaid(user);
+        const userDir = paid ? await ensureUserDir(user.id) : null;
+        const documents: any[] = [];
+        const items: any[] = [];
+
+        for (const file of files) {
+          const ext = resolveExtension(file.mimetype, file.originalname);
+          if (!ext || !verifyMagicBytes(file.buffer, ext)) {
+            documents.push({ originalName: file.originalname, status: "error", error: "File content does not match its declared type." });
+            continue;
+          }
+
+          let documentId: number | null = null;
+          let storedPath: string | null = null;
+
+          if (paid && userDir) {
+            const storedFilename = `${crypto.randomUUID()}.${ext}`;
+            storedPath = path.join(userDir, storedFilename);
+            await fs.writeFile(storedPath, file.buffer);
+            const doc = await storage.createUploadedDocument({
+              userId: user.id,
+              originalName: file.originalname,
+              storedPath,
+              fileType: ext,
+              fileSize: file.size,
+              status: "processing",
+              documentType: "net_worth_statement",
+              extractedText: null,
+            });
+            documentId = doc.id;
+          }
+
+          try {
+            const { result, documentText } = await parseFinancialFile(file, ext);
+            const mapped = toStatementItems(result, file.originalname, documentId);
+            items.push(...mapped);
+
+            if (paid && documentId) {
+              await storage.updateUploadedDocumentStatus(documentId, "done");
+              if (documentText.trim().length > 0) {
+                extractFinancialDocument(documentText)
+                  .then(({ rawResponse, result: aiResult, model }) => storage.createAiExtraction({
+                    documentId: documentId!,
+                    userId: user.id,
+                    model,
+                    rawResponse,
+                    itemCount: aiResult.items.length,
+                  }))
+                  .catch((err) => {
+                    if (!(err instanceof OpenAINotConfiguredError)) {
+                      console.warn(`[ai-extract] doc ${documentId}:`, (err as Error).message);
+                    }
+                  });
+              }
+            }
+
+            documents.push({
+              documentId,
+              originalName: file.originalname,
+              status: mapped.length ? "ready" : "needs-review",
+              warnings: result.warnings ?? [],
+              totalRows: result.totalRows ?? 0,
+              skippedRows: result.skippedRows ?? 0,
+              saved: paid,
+            });
+          } catch (err: any) {
+            if (storedPath) await fs.unlink(storedPath).catch(() => null);
+            documents.push({ documentId, originalName: file.originalname, status: "error", error: err?.message ?? "Parsing failed." });
+          }
+        }
+
+        res.json({ documents, items, savedPermanently: paid });
+      } catch (err) { next(err); }
+    },
+  );
 
   // ── POST /api/documents — upload files ─────────────────────────────────────
   app.post(
@@ -142,6 +318,11 @@ export function registerDocumentRoutes(app: Express) {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const user = req.user as any;
+        if (!isPaid(user)) {
+          return res.status(403).json({
+            message: "Premium subscription required to save uploaded documents permanently. Net Worth uploads remain available for temporary session parsing.",
+          });
+        }
         const files = req.files as Express.Multer.File[];
 
         if (!files || files.length === 0) {
