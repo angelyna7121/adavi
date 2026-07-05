@@ -37,8 +37,39 @@ async function makePaid(email: string) {
   }
 }
 
+async function getSavedNetWorthRows(email: string) {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) throw new Error("DATABASE_URL is required for E2E database verification.");
+  const pool = new Pool({ connectionString: databaseUrl });
+  try {
+    const result = await pool.query(
+      `
+        SELECT nwi.name, nwi.category, nwi.type, nwi.amount, nwi.institution_name
+        FROM users u
+        JOIN net_worth_items nwi ON nwi.user_id = u.id
+        WHERE u.email = $1
+        ORDER BY nwi.created_at ASC, nwi.id ASC
+      `,
+      [email],
+    );
+    return result.rows as Array<{
+      name: string;
+      category: string;
+      type: "asset" | "liability";
+      amount: number;
+      institution_name: string | null;
+    }>;
+  } finally {
+    await pool.end();
+  }
+}
+
 async function uploadSampleStatement(page: Page) {
   await page.goto("/net-worth");
+  const parseResponsePromise = page.waitForResponse((response) =>
+    response.url().includes("/api/net-worth/parse") &&
+    response.request().method() === "POST",
+  );
   await page.getByTestId("input-net-worth-upload").setInputFiles({
     name: "net-worth-sample.csv",
     mimeType: "text/csv",
@@ -48,9 +79,46 @@ async function uploadSampleStatement(page: Page) {
       "TD Mortgage,TD,Mortgages,liability,320000,Primary residence debt",
     ].join("\n")),
   });
+  const parseResponse = await parseResponsePromise;
+  expect(parseResponse.ok()).toBeTruthy();
+  const parsePayload = await parseResponse.json();
+  console.log("[e2e] /api/net-worth/parse response", JSON.stringify({
+    documents: parsePayload.documents,
+    items: parsePayload.items,
+  }));
+
+  expect(parsePayload.documents).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      originalName: "net-worth-sample.csv",
+      status: "ready",
+      totalRows: 2,
+      skippedRows: 0,
+    }),
+  ]));
+  expect(parsePayload.items).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      name: "RBC Chequing — RBC",
+      category: "Bank Accounts",
+      type: "asset",
+      amount: 12500,
+      institutionName: "RBC",
+    }),
+    expect.objectContaining({
+      name: "TD Mortgage — TD",
+      category: "Mortgages",
+      type: "liability",
+      amount: 320000,
+      institutionName: "TD",
+    }),
+  ]));
+
   await expect(page.getByText("Review Extracted Line Items")).toBeVisible();
-  await expect(page.getByText("RBC Chequing")).toBeVisible();
-  await expect(page.getByText("TD Mortgage")).toBeVisible();
+  await expect(page.locator('[data-testid^="input-name-"]').nth(0)).toHaveValue("RBC Chequing — RBC");
+  await expect(page.locator('[data-testid^="input-name-"]').nth(1)).toHaveValue("TD Mortgage — TD");
+  await expect(page.locator('[data-testid^="input-institution-"]').nth(0)).toHaveValue("RBC");
+  await expect(page.locator('[data-testid^="input-institution-"]').nth(1)).toHaveValue("TD");
+  await expect(page.locator('[data-testid^="select-category-"]').nth(0)).toHaveValue("Bank Accounts");
+  await expect(page.locator('[data-testid^="select-category-"]').nth(1)).toHaveValue("Mortgages");
 }
 
 async function editReviewAndGenerate(page: Page) {
@@ -114,6 +182,28 @@ test.describe("Net Worth workflow", () => {
 
     await page.getByTestId("button-save-net-worth").click();
     await expect(page.getByText("Statement saved")).toBeVisible();
+    await expect.poll(async () => getSavedNetWorthRows(email)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "RBC Chequing — RBC",
+        category: "Bank Accounts",
+        type: "asset",
+        amount: 12500,
+        institution_name: "RBC",
+      }),
+      expect.objectContaining({
+        name: "TD Mortgage — TD",
+        category: "Mortgages",
+        type: "liability",
+        amount: 320000,
+        institution_name: "TD",
+      }),
+      expect.objectContaining({
+        name: "Manual TFSA",
+        category: "Investments",
+        type: "asset",
+        amount: 45000,
+      }),
+    ]));
 
     await page.evaluate(() => {
       window.print = () => {
