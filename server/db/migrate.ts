@@ -4,9 +4,49 @@ export async function runMigrations() {
   const client = await pool.connect();
   try {
     await client.query(`
+      -- Users
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE,
+        password_hash TEXT,
+        google_id TEXT UNIQUE,
+        stripe_customer_id TEXT UNIQUE,
+        stripe_subscription_id TEXT,
+        subscription_status TEXT NOT NULL DEFAULT 'free',
+        plan_type TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+
+      -- User Profiles
+      CREATE TABLE IF NOT EXISTS user_profiles (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL UNIQUE REFERENCES users(id),
+        first_name TEXT,
+        last_name TEXT,
+        business_type TEXT,
+        province TEXT DEFAULT 'ON',
+        income_range TEXT,
+        onboarding_completed BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+
       -- Add firstName/lastName to user_profiles if missing
       ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS first_name TEXT;
       ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS last_name TEXT;
+
+      -- Scenarios (legacy)
+      CREATE TABLE IF NOT EXISTS scenarios (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        title TEXT NOT NULL,
+        corporate_revenue INTEGER NOT NULL DEFAULT 0,
+        corporate_expenses INTEGER NOT NULL DEFAULT 0,
+        salary_amount INTEGER NOT NULL DEFAULT 0,
+        dividend_amount INTEGER NOT NULL DEFAULT 0,
+        province TEXT NOT NULL DEFAULT 'ON',
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
 
       -- Net Worth Statements
       CREATE TABLE IF NOT EXISTS net_worth_statements (
@@ -100,6 +140,23 @@ export async function runMigrations() {
         annotation_type TEXT NOT NULL,
         notes           TEXT,
         created_at      TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+
+      -- Waitlist
+      CREATE TABLE IF NOT EXISTS waitlist_emails (
+        id SERIAL PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE,
+        source TEXT NOT NULL DEFAULT 'landing',
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+
+      -- Analytics Events
+      CREATE TABLE IF NOT EXISTS analytics_events (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        event_name TEXT NOT NULL,
+        metadata TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
       );
     `);
     console.log("[migrate] Schema up to date.");
