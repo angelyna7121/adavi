@@ -172,24 +172,24 @@ function RowEditor({
       className="min-w-[1120px] grid grid-cols-[130px_125px_140px_115px_135px_130px_180px_110px_110px_105px_90px_44px] gap-2 items-center px-3 py-2 border-b"
       style={{ borderColor: BORDER, background: lowConfidence ? "rgba(251,191,36,0.07)" : "transparent" }}
     >
-      <Input value={item.investorName} onChange={e => onChange(item.id, "investorName", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white" />
-      <select value={item.type} onChange={e => onChange(item.id, "type", e.target.value)} className="h-8 rounded-md border px-2 text-sm text-white" style={{ background: CARD2, borderColor: BORDER }}>
+      <Input value={item.investorName} onChange={e => onChange(item.id, "investorName", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white" data-testid={`input-investor-${item.id}`} />
+      <select value={item.type} onChange={e => onChange(item.id, "type", e.target.value)} className="h-8 rounded-md border px-2 text-sm text-white" style={{ background: CARD2, borderColor: BORDER }} data-testid={`select-type-${item.id}`}>
         <option value="asset">Asset</option>
         <option value="liability">Liability</option>
       </select>
-      <Input value={item.institutionName} onChange={e => onChange(item.id, "institutionName", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white" />
-      <Input value={item.reportingPeriod} onChange={e => onChange(item.id, "reportingPeriod", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white" placeholder="YYYY-MM" />
-      <select value={item.category} onChange={e => onChange(item.id, "category", e.target.value)} className="h-8 rounded-md border px-2 text-sm text-white" style={{ background: CARD2, borderColor: BORDER }}>
+      <Input value={item.institutionName} onChange={e => onChange(item.id, "institutionName", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white" data-testid={`input-institution-${item.id}`} />
+      <Input value={item.reportingPeriod} onChange={e => onChange(item.id, "reportingPeriod", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white" placeholder="YYYY-MM" data-testid={`input-period-${item.id}`} />
+      <select value={item.category} onChange={e => onChange(item.id, "category", e.target.value)} className="h-8 rounded-md border px-2 text-sm text-white" style={{ background: CARD2, borderColor: BORDER }} data-testid={`select-category-${item.id}`}>
         {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
       </select>
-      <select value={item.subcategory} onChange={e => onChange(item.id, "subcategory", e.target.value)} className="h-8 rounded-md border px-2 text-sm text-white" style={{ background: CARD2, borderColor: BORDER }}>
+      <select value={item.subcategory} onChange={e => onChange(item.id, "subcategory", e.target.value)} className="h-8 rounded-md border px-2 text-sm text-white" style={{ background: CARD2, borderColor: BORDER }} data-testid={`select-subcategory-${item.id}`}>
         <option value="">None</option>
         {SUBCATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
       </select>
-      <Input value={item.name} onChange={e => onChange(item.id, "name", e.target.value)} className={`h-8 bg-white/5 text-white ${invalid ? "border-red-400/50" : "border-white/10"}`} />
-      <Input type="number" min={0} value={item.amount} onChange={e => onChange(item.id, "amount", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white text-right" />
-      <Input type="number" min={0} value={item.priorValue} onChange={e => onChange(item.id, "priorValue", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white text-right" />
-      <Input type="number" value={item.changeAmount} onChange={e => onChange(item.id, "changeAmount", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white text-right" />
+      <Input value={item.name} onChange={e => onChange(item.id, "name", e.target.value)} className={`h-8 bg-white/5 text-white ${invalid ? "border-red-400/50" : "border-white/10"}`} data-testid={`input-name-${item.id}`} />
+      <Input type="number" min={0} value={item.amount} onChange={e => onChange(item.id, "amount", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white text-right" data-testid={`input-current-${item.id}`} />
+      <Input type="number" min={0} value={item.priorValue} onChange={e => onChange(item.id, "priorValue", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white text-right" data-testid={`input-prior-${item.id}`} />
+      <Input type="number" value={item.changeAmount} onChange={e => onChange(item.id, "changeAmount", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white text-right" data-testid={`input-change-${item.id}`} />
       <button
         onClick={() => onChange(item.id, "verified", !item.verified)}
         className="h-8 rounded-md border text-xs font-bold"
@@ -198,10 +198,11 @@ function RowEditor({
           background: item.verified ? "rgba(74,222,128,0.12)" : "rgba(255,255,255,0.04)",
           color: item.verified ? GREEN : MUTED,
         }}
+        data-testid={`button-verify-${item.id}`}
       >
         {item.verified ? "Verified" : `${item.confidenceScore}%`}
       </button>
-      <button onClick={() => onDelete(item.id)} className="text-red-300/60 hover:text-red-300">
+      <button onClick={() => onDelete(item.id)} className="text-red-300/60 hover:text-red-300" data-testid={`button-delete-${item.id}`}>
         <Trash2 className="w-4 h-4" />
       </button>
     </div>
@@ -261,7 +262,7 @@ export default function NetWorth() {
     if (!fileList) return;
     if (!user) { setShowSignupGate(true); return; }
     const files = Array.from(fileList);
-    const invalid = files.find(file => file.size > MAX_SIZE || !ACCEPTED.split(",").some(ext => file.name.toLowerCase().endsWith(ext.replace(".", "")) || file.name.toLowerCase().endsWith(ext)));
+    const invalid = files.find(file => file.size > MAX_SIZE || !ACCEPTED.split(",").some(ext => file.name.toLowerCase().endsWith(ext)));
     if (invalid) {
       toast({ title: "Unsupported file", description: "Upload PDF, JPG, PNG, CSV, or XLSX files up to 10 MB.", variant: "destructive" });
       return;
@@ -415,7 +416,7 @@ export default function NetWorth() {
               className="min-h-[360px] rounded-2xl border-2 border-dashed flex flex-col items-center justify-center text-center cursor-pointer transition-colors"
               style={{ borderColor: dragging ? GOLD : GOLD_BORDER, background: dragging ? "rgba(197,163,90,0.10)" : CARD }}
             >
-              <input ref={fileInputRef} type="file" className="hidden" multiple accept={ACCEPTED} onChange={e => { handleFiles(e.target.files); e.target.value = ""; }} />
+              <input ref={fileInputRef} type="file" className="hidden" multiple accept={ACCEPTED} onChange={e => { handleFiles(e.target.files); e.target.value = ""; }} data-testid="input-net-worth-upload" />
               <Upload className="w-12 h-12 mb-4" style={{ color: GOLD }} />
               <p className="text-xl font-bold text-white mb-2">{parsing ? "Parsing documents..." : "Drop files here or browse"}</p>
               <p className="text-sm max-w-md" style={{ color: MUTED }}>PDF, JPG, PNG, CSV, XLSX, OCR scans, and Adobe-exported statements up to 10 MB each.</p>
@@ -429,10 +430,10 @@ export default function NetWorth() {
                 <Input value={reportingPeriod} onChange={e => setReportingPeriod(e.target.value)} placeholder="Reporting period, e.g. 2026-07" className="bg-white/5 border-white/10 text-white" />
               </div>
               <div className="flex flex-wrap gap-3">
-                <Button onClick={() => addManualItem("asset")} className="font-bold" style={{ background: "rgba(74,222,128,0.12)", color: GREEN, border: "1px solid rgba(74,222,128,0.3)" }}>
+                <Button onClick={() => addManualItem("asset")} className="font-bold" style={{ background: "rgba(74,222,128,0.12)", color: GREEN, border: "1px solid rgba(74,222,128,0.3)" }} data-testid="button-add-manual-asset">
                   <Plus className="w-4 h-4 mr-1.5" />Add Asset
                 </Button>
-                <Button onClick={() => addManualItem("liability")} className="font-bold" style={{ background: "rgba(248,113,113,0.12)", color: RED, border: "1px solid rgba(248,113,113,0.3)" }}>
+                <Button onClick={() => addManualItem("liability")} className="font-bold" style={{ background: "rgba(248,113,113,0.12)", color: RED, border: "1px solid rgba(248,113,113,0.3)" }} data-testid="button-add-manual-liability">
                   <Plus className="w-4 h-4 mr-1.5" />Add Liability
                 </Button>
               </div>
@@ -457,7 +458,7 @@ export default function NetWorth() {
                 <h2 className="text-xl font-bold text-white">Review Extracted Line Items</h2>
                 <p className="text-sm" style={{ color: MUTED }}>Low-confidence rows are highlighted. Amend values and mark rows verified before generating the statement.</p>
               </div>
-              <Button onClick={() => addManualItem("asset")} variant="outline" className="text-white border" style={{ borderColor: GOLD_BORDER }}>
+              <Button onClick={() => addManualItem("asset")} variant="outline" className="text-white border" style={{ borderColor: GOLD_BORDER }} data-testid="button-add-review-row">
                 <Plus className="w-4 h-4 mr-1.5" />Add Row
               </Button>
             </div>
@@ -475,10 +476,10 @@ export default function NetWorth() {
               </div>
             )}
             <div className="flex flex-wrap gap-3 p-5 border-t" style={{ borderColor: BORDER }}>
-              <Button onClick={confirmReview} className="font-bold" style={{ background: GOLD, color: BG }}>
+              <Button onClick={confirmReview} className="font-bold" style={{ background: GOLD, color: BG }} data-testid="button-generate-statement">
                 <Check className="w-4 h-4 mr-1.5" />Generate Statement
               </Button>
-              <Button variant="outline" onClick={() => setStep("upload")} className="border text-white/70" style={{ borderColor: BORDER }}>
+              <Button variant="outline" onClick={() => setStep("upload")} className="border text-white/70" style={{ borderColor: BORDER }} data-testid="button-back-upload">
                 <ChevronLeft className="w-4 h-4 mr-1" />Back
               </Button>
             </div>
@@ -503,19 +504,19 @@ export default function NetWorth() {
             <div className="grid lg:grid-cols-[260px_1fr] gap-4 mb-6 no-print">
               <div className="rounded-xl border p-4" style={{ background: CARD, borderColor: BORDER }}>
                 <label className="text-xs font-bold uppercase tracking-wider" style={{ color: DIM }}>Statement View</label>
-                <select value={selectedInvestor} onChange={e => setSelectedInvestor(e.target.value)} className="w-full mt-2 h-10 rounded-lg border px-3 text-white" style={{ background: CARD2, borderColor: BORDER }}>
+                <select value={selectedInvestor} onChange={e => setSelectedInvestor(e.target.value)} className="w-full mt-2 h-10 rounded-lg border px-3 text-white" style={{ background: CARD2, borderColor: BORDER }} data-testid="select-statement-view">
                   <option value="combined">Combined Family</option>
                   {investors.map(name => <option key={name} value={name}>{name}</option>)}
                 </select>
               </div>
               <div className="rounded-xl border p-4 grid sm:grid-cols-2 gap-3" style={{ background: CARD, borderColor: BORDER }}>
-                <Input value={familyName} onChange={e => setFamilyName(e.target.value)} placeholder="Family/group name" className="bg-white/5 border-white/10 text-white" />
-                <Input value={reportingPeriod} onChange={e => setReportingPeriod(e.target.value)} placeholder="Statement period" className="bg-white/5 border-white/10 text-white" />
+                <Input value={familyName} onChange={e => setFamilyName(e.target.value)} placeholder="Family/group name" className="bg-white/5 border-white/10 text-white" data-testid="input-report-family" />
+                <Input value={reportingPeriod} onChange={e => setReportingPeriod(e.target.value)} placeholder="Statement period" className="bg-white/5 border-white/10 text-white" data-testid="input-report-period" />
               </div>
             </div>
 
             <div className="grid lg:grid-cols-[1fr_360px] gap-6">
-              <div className="rounded-2xl border p-5 print-panel" style={{ background: CARD, borderColor: BORDER }}>
+              <div className="rounded-2xl border p-5 print-panel" style={{ background: CARD, borderColor: BORDER }} data-testid="net-worth-report">
                 <div className="mb-5">
                   <h2 className="text-2xl font-bold text-white print-text">Statement of Net Worth</h2>
                   <p className="text-sm print-text" style={{ color: MUTED }}>As of {reportingPeriod || DEFAULT_PERIOD} {familyName ? `for ${familyName}` : ""}</p>
@@ -576,20 +577,20 @@ export default function NetWorth() {
             </div>
 
             <div className="flex flex-wrap gap-3 mt-6 no-print">
-              <Button variant="outline" onClick={() => setStep("upload")} className="border text-white/70" style={{ borderColor: BORDER }}>
+              <Button variant="outline" onClick={() => setStep("upload")} className="border text-white/70" style={{ borderColor: BORDER }} data-testid="button-upload-more">
                 <ChevronLeft className="w-4 h-4 mr-1" />Upload More
               </Button>
-              <Button onClick={() => addManualItem("asset")} className="font-semibold" style={{ background: "rgba(255,255,255,0.07)", color: "white", border: `1px solid ${BORDER}` }}>
+              <Button onClick={() => addManualItem("asset")} className="font-semibold" style={{ background: "rgba(255,255,255,0.07)", color: "white", border: `1px solid ${BORDER}` }} data-testid="button-add-manual-row">
                 <Plus className="w-4 h-4 mr-1.5" />Add Manual Row
               </Button>
-              <Button onClick={() => setStep("review")} variant="outline" className="border text-white/70" style={{ borderColor: BORDER }}>
+              <Button onClick={() => setStep("review")} variant="outline" className="border text-white/70" style={{ borderColor: BORDER }} data-testid="button-review-rows">
                 <RefreshCw className="w-4 h-4 mr-1.5" />Review Rows
               </Button>
-              <Button onClick={handleSave} disabled={saveStatement.isPending || allItems.length === 0} className="font-semibold" style={{ background: isPro ? "rgba(255,255,255,0.07)" : "rgba(197,163,90,0.08)", color: isPro ? "white" : GOLD, border: `1px solid ${isPro ? BORDER : GOLD_BORDER}` }}>
+              <Button onClick={handleSave} disabled={saveStatement.isPending || allItems.length === 0} className="font-semibold" style={{ background: isPro ? "rgba(255,255,255,0.07)" : "rgba(197,163,90,0.08)", color: isPro ? "white" : GOLD, border: `1px solid ${isPro ? BORDER : GOLD_BORDER}` }} data-testid="button-save-net-worth">
                 {!isPro ? <Lock className="w-4 h-4 mr-1.5" /> : <Save className="w-4 h-4 mr-1.5" />}
                 {saveStatement.isPending ? "Saving..." : isPro ? "Save Statement" : "Save (Premium)"}
               </Button>
-              <Button onClick={handleExport} className="font-semibold" style={{ background: isPro ? GOLD : "rgba(197,163,90,0.12)", color: isPro ? BG : GOLD }}>
+              <Button onClick={handleExport} className="font-semibold" style={{ background: isPro ? GOLD : "rgba(197,163,90,0.12)", color: isPro ? BG : GOLD }} data-testid="button-print-download">
                 {!isPro ? <Lock className="w-4 h-4 mr-1.5" /> : <Download className="w-4 h-4 mr-1.5" />}Print / Download
               </Button>
             </div>

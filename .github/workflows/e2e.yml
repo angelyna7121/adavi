@@ -1,0 +1,79 @@
+name: E2E
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  net-worth-e2e:
+    name: Net Worth E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: adavi
+          POSTGRES_PASSWORD: adavi
+          POSTGRES_DB: adavi_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      NODE_ENV: development
+      PORT: 4173
+      DATABASE_URL: postgresql://adavi:adavi@127.0.0.1:5432/adavi_e2e
+      SESSION_SECRET: e2e-session-secret-at-least-32-characters
+      PUBLIC_APP_URL: http://127.0.0.1:4173
+      STRIPE_SECRET_KEY: sk_test_e2e_placeholder
+      STRIPE_WEBHOOK_SECRET: whsec_e2e_placeholder
+      STRIPE_PRO_MONTHLY_PRICE_ID: price_e2e_monthly
+      STRIPE_PRO_ANNUAL_PRICE_ID: price_e2e_annual
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prod=false
+
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: TypeScript check
+        run: pnpm run check
+
+      - name: Production build
+        run: pnpm run build
+
+      - name: Net Worth E2E tests
+        run: pnpm run test:e2e
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

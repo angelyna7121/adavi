@@ -1,0 +1,133 @@
+import { expect, test, type Page } from "@playwright/test";
+import pg from "pg";
+
+const { Pool } = pg;
+
+const password = "AdaviE2E!2026";
+
+function uniqueEmail(prefix: string) {
+  return `${prefix}.${Date.now()}.${Math.random().toString(36).slice(2)}@example.com`;
+}
+
+async function signUp(page: Page, email: string) {
+  await page.goto("/signup");
+  await page.getByTestId("input-email").fill(email);
+  await page.getByTestId("input-password").fill(password);
+  await page.getByTestId("input-confirm-password").fill(password);
+  await page.getByTestId("button-signup").click();
+  await page.waitForURL(/\/onboarding|\/dashboard/);
+  if (page.url().includes("/onboarding")) {
+    await page.getByTestId("button-onboarding-skip").click();
+  }
+  await page.waitForURL(/\/dashboard/);
+}
+
+async function makePaid(email: string) {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) throw new Error("DATABASE_URL is required for E2E paid-user setup.");
+  const pool = new Pool({ connectionString: databaseUrl });
+  try {
+    await pool.query(
+      "UPDATE users SET subscription_status = 'active', plan_type = 'monthly' WHERE email = $1",
+      [email],
+    );
+  } finally {
+    await pool.end();
+  }
+}
+
+async function uploadSampleStatement(page: Page) {
+  await page.goto("/net-worth");
+  await page.getByTestId("input-net-worth-upload").setInputFiles({
+    name: "net-worth-sample.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from([
+      "description,account name,category,type,current value,notes",
+      "RBC Chequing,RBC,Bank Accounts,asset,12500,Operating cash",
+      "TD Mortgage,TD,Mortgages,liability,320000,Primary residence debt",
+    ].join("\n")),
+  });
+  await expect(page.getByText("Review Extracted Line Items")).toBeVisible();
+  await expect(page.getByText("RBC Chequing")).toBeVisible();
+  await expect(page.getByText("TD Mortgage")).toBeVisible();
+}
+
+async function editReviewAndGenerate(page: Page) {
+  const investorInputs = page.locator('[data-testid^="input-investor-"]');
+  await expect(investorInputs.first()).toBeVisible();
+  await investorInputs.nth(0).fill("Angelyna");
+  await investorInputs.nth(1).fill("Family Trust");
+
+  const priorInputs = page.locator('[data-testid^="input-prior-"]');
+  await priorInputs.nth(0).fill("10000");
+  await priorInputs.nth(1).fill("330000");
+
+  await page.locator('[data-testid^="button-verify-"]').nth(0).click();
+  await page.getByTestId("button-add-review-row").click();
+  const nameInputs = page.locator('[data-testid^="input-name-"]');
+  await nameInputs.last().fill("Manual TFSA");
+  await page.locator('[data-testid^="input-investor-"]').last().fill("Angelyna");
+  await page.locator('[data-testid^="select-type-"]').last().selectOption("asset");
+  await page.locator('[data-testid^="select-category-"]').last().selectOption("Investments");
+  await page.locator('[data-testid^="input-current-"]').last().fill("45000");
+  await page.locator('[data-testid^="input-prior-"]').last().fill("42000");
+
+  await page.getByTestId("button-generate-statement").click();
+  await expect(page.getByTestId("net-worth-report")).toBeVisible();
+  await expect(page.getByText("Statement of Net Worth")).toBeVisible();
+  await expect(page.getByText("Net Worth Variance Analysis")).toBeVisible();
+  await expect(page.getByText("Manual TFSA")).toBeVisible();
+}
+
+test.describe("Net Worth workflow", () => {
+  test("free user signs in, uploads, parses, reviews, generates report, sees export gating, and logs out", async ({ page }) => {
+    const email = uniqueEmail("free.networth");
+    await signUp(page, email);
+
+    await page.getByTestId("card-module-create-net-worth-statement").click();
+    await expect(page).toHaveURL(/\/net-worth/);
+    await uploadSampleStatement(page);
+    await editReviewAndGenerate(page);
+
+    await page.getByTestId("button-save-net-worth").click();
+    await expect(page.getByTestId("net-worth-upgrade-modal")).toBeVisible();
+    await page.keyboard.press("Escape");
+
+    await page.getByTestId("button-print-download").click();
+    await expect(page.getByTestId("net-worth-upgrade-modal")).toBeVisible();
+
+    await page.goto("/settings");
+    await page.getByTestId("button-logout-settings").click();
+    await page.waitForURL(/\/$/);
+    await expect(page.getByText("Start Free").first()).toBeVisible();
+  });
+
+  test("paid user saves statement and can invoke print/download without upgrade gate", async ({ page }) => {
+    const email = uniqueEmail("paid.networth");
+    await signUp(page, email);
+    await makePaid(email);
+    await page.reload();
+
+    await uploadSampleStatement(page);
+    await editReviewAndGenerate(page);
+
+    await page.getByTestId("button-save-net-worth").click();
+    await expect(page.getByText("Statement saved")).toBeVisible();
+
+    await page.evaluate(() => {
+      window.print = () => {
+        window.dispatchEvent(new Event("e2e-print-called"));
+      };
+    });
+    const printCalled = page.evaluate(() => new Promise<boolean>((resolve) => {
+      window.addEventListener("e2e-print-called", () => resolve(true), { once: true });
+    }));
+    await page.getByTestId("button-print-download").click();
+    await expect(page.getByTestId("net-worth-upgrade-modal")).toBeHidden();
+    await expect(printCalled).resolves.toBe(true);
+
+    await page.goto("/settings");
+    await page.getByTestId("button-logout-settings").click();
+    await page.waitForURL(/\/$/);
+  });
+});
