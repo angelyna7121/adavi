@@ -6,7 +6,8 @@ const { Pool } = pg;
 const password = "AdaviE2E!2026";
 
 function uniqueEmail(prefix: string) {
-  return `${prefix}.${Date.now()}.${Math.random().toString(36).slice(2)}@example.com`;
+  const runId = process.env.E2E_RUN_ID || "local";
+  return `${prefix}.${runId}.${Date.now()}.${Math.random().toString(36).slice(2)}@example.com`;
 }
 
 async function signUp(page: Page, email: string) {

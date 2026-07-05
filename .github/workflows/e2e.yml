@@ -14,25 +14,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: adavi
-          POSTGRES_PASSWORD: adavi
-          POSTGRES_DB: adavi_e2e
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     env:
       NODE_ENV: development
       PORT: 4173
-      DATABASE_URL: postgresql://adavi:adavi@127.0.0.1:5432/adavi_e2e
+      DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+      E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
       SESSION_SECRET: e2e-session-secret-at-least-32-characters
       PUBLIC_APP_URL: http://127.0.0.1:4173
       STRIPE_SECRET_KEY: sk_test_e2e_placeholder
@@ -58,17 +44,32 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --prod=false
 
+      - name: Verify Neon test database secret
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "NEON_DATABASE_URL is not configured. Add a dedicated Neon development/test database URL as a GitHub Actions secret."
+            exit 1
+          fi
+
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium
 
       - name: TypeScript check
         run: pnpm run check
 
+      - name: Run database migrations
+        run: pnpm run db:migrate
+
       - name: Production build
         run: pnpm run build
 
       - name: Net Worth E2E tests
         run: pnpm run test:e2e
+
+      - name: Clean up E2E test data
+        if: always()
+        continue-on-error: true
+        run: pnpm run test:e2e:cleanup
 
       - name: Upload Playwright report
         if: always()
