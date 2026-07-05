@@ -42,6 +42,14 @@ function safeUser(user: any): SafeUser {
   return safe;
 }
 
+async function trackEventSafe(eventName: string, userId?: number, metadata?: string): Promise<void> {
+  try {
+    await storage.trackEvent(eventName, userId, metadata);
+  } catch (err) {
+    console.warn(`[analytics] Failed to track ${eventName}:`, err);
+  }
+}
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   // ── Document upload routes ─────────────────────────────────────
   registerDocumentRoutes(app);
@@ -68,7 +76,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (existing) return res.status(400).json({ message: "An account with this email already exists." });
       const user = await storage.createUser(input.email, input.password);
       await storage.upsertUserProfile(user.id, { onboardingCompleted: false });
-      await storage.trackEvent("signup_completed", user.id);
+      await trackEventSafe("signup_completed", user.id);
       // Regenerate session to prevent session fixation attacks
       req.session.regenerate((regenErr) => {
         if (regenErr) return next(regenErr);
@@ -92,7 +100,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (regenErr) return next(regenErr);
         req.login(user, async (loginErr) => {
           if (loginErr) return next(loginErr);
-          await storage.trackEvent("login_completed", user.id);
+          await trackEventSafe("login_completed", user.id);
           const profile = await storage.getUserProfile(user.id);
           res.json({ ...safeUser(user), profile: profile ?? null });
         });
@@ -119,7 +127,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       passport.authenticate("google", { failureRedirect: "/login?error=google_failed" }),
       async (req, res) => {
         const user = req.user as any;
-        await storage.trackEvent("login_completed", user.id, JSON.stringify({ method: "google" }));
+        await trackEventSafe("login_completed", user.id, JSON.stringify({ method: "google" }));
         const profile = await storage.getUserProfile(user.id);
         if (!profile || !profile.onboardingCompleted) return res.redirect("/onboarding");
         res.redirect("/dashboard");
