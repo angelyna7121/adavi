@@ -17,6 +17,10 @@ validateConfig();
 export const app = express();
 const httpServer = createServer(app);
 
+if (process.env.VERCEL || appConfig.isProd) {
+  app.set("trust proxy", 1);
+}
+
 // ── Stripe status normalizer ───────────────────────────────────
 // Maps Stripe's subscription statuses to our 4 app statuses:
 // free | active | past_due | canceled
