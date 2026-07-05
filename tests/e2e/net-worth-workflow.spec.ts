@@ -142,8 +142,9 @@ async function editReviewAndGenerate(page: Page) {
   await page.locator('[data-testid^="input-prior-"]').last().fill("42000");
 
   await page.getByTestId("button-generate-statement").click();
-  await expect(page.getByTestId("net-worth-report")).toBeVisible();
-  await expect(page.getByText("Statement of Net Worth")).toBeVisible();
+  const report = page.getByTestId("net-worth-report");
+  await expect(report).toBeVisible();
+  await expect(report.getByRole("heading", { name: "Statement of Net Worth" })).toBeVisible();
   await expect(page.getByText("Net Worth Variance Analysis")).toBeVisible();
   await expect(page.getByText("Manual TFSA")).toBeVisible();
 }
