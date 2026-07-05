@@ -20,19 +20,27 @@ import type { ParsedItem, ParseResult } from "./csvParser.js";
 import { classifyLabel, inferCategoryExported as inferCategory, parseAmount } from "./csvParser.js";
 import { ocrScannedPdfBuffer } from "./ocrParser.js";
 
-// pdf-parse v2 — class-based API, CJS module.
 const _require = createRequire(`${process.cwd()}/package.json`);
-const { PDFParse } = _require("pdf-parse") as {
-  PDFParse: new (opts: { data: Buffer | Uint8Array }) => {
-    load(): Promise<void>;
-    destroy(): Promise<void>;
-    getText(opts?: { disableCombineTextItems?: boolean }): Promise<{
-      text: string;
-      total: number;
-      pages: Array<{ num: number; text: string }>;
-    }>;
-  };
+
+type PDFParseConstructor = new (opts: { data: Buffer | Uint8Array }) => {
+  load(): Promise<void>;
+  destroy(): Promise<void>;
+  getText(opts?: { disableCombineTextItems?: boolean }): Promise<{
+    text: string;
+    total: number;
+    pages: Array<{ num: number; text: string }>;
+  }>;
 };
+
+let pdfParsePromise: Promise<PDFParseConstructor> | null = null;
+
+function getPDFParse(): Promise<PDFParseConstructor> {
+  pdfParsePromise ??= Promise.resolve().then(() => {
+    const pdfParseMod = _require("pdf-parse") as { PDFParse: PDFParseConstructor };
+    return pdfParseMod.PDFParse;
+  });
+  return pdfParsePromise;
+}
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -182,6 +190,7 @@ export function parseFinancialText(rawText: string): TextParseResult {
  * can be retrieved. Used by the AI extraction pipeline.
  */
 export async function extractPdfText(buf: Buffer): Promise<string> {
+  const PDFParse = await getPDFParse();
   const parser = new PDFParse({ data: buf });
   try {
     await parser.load();
@@ -216,6 +225,7 @@ export async function parsePDFBuffer(buf: Buffer): Promise<PdfParseResult> {
   let rawText = "";
   let extractionFailed = false;
 
+  const PDFParse = await getPDFParse();
   const parser = new PDFParse({ data: buf });
   try {
     await parser.load();
