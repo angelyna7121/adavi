@@ -22,15 +22,7 @@ import { ocrImageBuffer } from "../services/ocrParser";
 import { parseFinancialText } from "../services/pdfParser";
 import { extractFinancialDocument, OpenAINotConfiguredError } from "../services/financialDocumentExtractor";
 import { classifyItem } from "../services/classificationEngine";
-import { createRequire } from "module";
-import type * as XLSXTypes from "xlsx";
-const _req = createRequire(`${process.cwd()}/package.json`);
-let xlsxModule: typeof XLSXTypes | null = null;
-
-function getXLSX(): typeof XLSXTypes {
-  xlsxModule ??= _req("xlsx") as typeof XLSXTypes;
-  return xlsxModule;
-}
+import * as XLSX from "xlsx";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -296,7 +288,6 @@ export function registerDocumentRoutes(app: Express) {
         result = parseXLSXBuffer(buf) as unknown as Record<string, unknown>;
         // Build a readable text representation for the AI
         try {
-          const XLSX = getXLSX();
           const wb = XLSX.read(buf, { type: "buffer" });
           documentText = wb.SheetNames
             .map(name => XLSX.utils.sheet_to_csv(wb.Sheets[name]))
