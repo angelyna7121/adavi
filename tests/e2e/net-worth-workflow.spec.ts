@@ -194,14 +194,14 @@ test.describe("Net Worth workflow", () => {
       }),
       expect.objectContaining({
         name: "TD Mortgage",
-        category: "Mortgages",
+        category: "Mortgage Debt",
         type: "liability",
         amount: 320000,
         institution_name: "TD",
       }),
       expect.objectContaining({
         name: "Manual TFSA",
-        category: "Investments",
+        category: "TFSA",
         type: "asset",
         amount: 45000,
       }),
