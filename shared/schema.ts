@@ -82,10 +82,22 @@ export const netWorthItems = pgTable("net_worth_items", {
   id: serial("id").primaryKey(),
   statementId: integer("statement_id").references(() => netWorthStatements.id).notNull(),
   userId: integer("user_id").references(() => users.id).notNull(),
+  documentId: integer("document_id").references(() => uploadedDocuments.id, { onDelete: "set null" }),
+  sourceType: text("source_type").default("manual").notNull(),
+  investorName: text("investor_name"),
+  familyName: text("family_name"),
+  institutionName: text("institution_name"),
   type: text("type").notNull(),      // "asset" | "liability"
   category: text("category").notNull(),
+  subcategory: text("subcategory"),
   name: text("name").notNull(),
   amount: integer("amount").default(0).notNull(),
+  priorValue: integer("prior_value").default(0).notNull(),
+  changeAmount: integer("change_amount").default(0).notNull(),
+  reportingPeriod: text("reporting_period"),
+  confidenceScore: integer("confidence_score").default(100).notNull(),
+  verified: boolean("verified").default(false).notNull(),
+  sourceTextSnippet: text("source_text_snippet"),
   notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -96,6 +108,22 @@ export const insertNetWorthItemSchema = createInsertSchema(netWorthItems).omit({
 });
 export type NetWorthItem = typeof netWorthItems.$inferSelect;
 export type InsertNetWorthItem = z.infer<typeof insertNetWorthItemSchema>;
+
+// Investor profiles are lightweight labels for grouping net worth statements.
+export const investorProfiles = pgTable("investor_profiles", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").references(() => users.id).notNull(),
+  investorName: text("investor_name").notNull(),
+  familyName: text("family_name"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertInvestorProfileSchema = createInsertSchema(investorProfiles).omit({
+  id: true, createdAt: true, updatedAt: true,
+});
+export type InvestorProfile = typeof investorProfiles.$inferSelect;
+export type InsertInvestorProfile = z.infer<typeof insertInvestorProfileSchema>;
 
 // ── Income Strategies (saved) ──────────────────────────────────
 export const incomeStrategies = pgTable("income_strategies", {
@@ -156,6 +184,22 @@ export const insertReportSchema = createInsertSchema(reports).omit({
 });
 export type Report = typeof reports.$inferSelect;
 export type InsertReport = z.infer<typeof insertReportSchema>;
+
+export const reportSnapshots = pgTable("report_snapshots", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").references(() => users.id).notNull(),
+  statementId: integer("statement_id").references(() => netWorthStatements.id, { onDelete: "cascade" }).notNull(),
+  reportType: text("report_type").default("net_worth").notNull(),
+  title: text("title").notNull(),
+  snapshotJson: text("snapshot_json").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertReportSnapshotSchema = createInsertSchema(reportSnapshots).omit({
+  id: true, createdAt: true,
+});
+export type ReportSnapshot = typeof reportSnapshots.$inferSelect;
+export type InsertReportSnapshot = z.infer<typeof insertReportSnapshotSchema>;
 
 // ── Waitlist ───────────────────────────────────────────────────
 export const waitlistEmails = pgTable("waitlist_emails", {

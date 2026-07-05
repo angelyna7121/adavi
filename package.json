@@ -9,6 +9,9 @@
     "build": "tsx script/build.ts",
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
+    "test:e2e": "playwright test",
+    "db:migrate": "tsx script/migrate.ts",
+    "test:e2e:cleanup": "tsx script/cleanup-e2e.ts",
     "db:push": "drizzle-kit push"
   },
   "dependencies": {
@@ -91,6 +94,7 @@
     "zod-validation-error": "^3.4.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.57.0",
     "@replit/vite-plugin-cartographer": "^0.4.4",
     "@replit/vite-plugin-dev-banner": "^0.1.1",
     "@replit/vite-plugin-runtime-error-modal": "^0.0.3",

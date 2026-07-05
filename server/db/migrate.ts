@@ -75,11 +75,42 @@ export async function runMigrations() {
         id SERIAL PRIMARY KEY,
         statement_id INTEGER NOT NULL REFERENCES net_worth_statements(id) ON DELETE CASCADE,
         user_id INTEGER NOT NULL REFERENCES users(id),
+        source_type TEXT NOT NULL DEFAULT 'manual',
+        investor_name TEXT,
+        family_name TEXT,
+        institution_name TEXT,
         type TEXT NOT NULL,
         category TEXT NOT NULL,
+        subcategory TEXT,
         name TEXT NOT NULL,
         amount INTEGER NOT NULL DEFAULT 0,
+        prior_value INTEGER NOT NULL DEFAULT 0,
+        change_amount INTEGER NOT NULL DEFAULT 0,
+        reporting_period TEXT,
+        confidence_score INTEGER NOT NULL DEFAULT 100,
+        verified BOOLEAN NOT NULL DEFAULT FALSE,
+        source_text_snippet TEXT,
         notes TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      ALTER TABLE net_worth_items ADD COLUMN IF NOT EXISTS source_type TEXT NOT NULL DEFAULT 'manual';
+      ALTER TABLE net_worth_items ADD COLUMN IF NOT EXISTS investor_name TEXT;
+      ALTER TABLE net_worth_items ADD COLUMN IF NOT EXISTS family_name TEXT;
+      ALTER TABLE net_worth_items ADD COLUMN IF NOT EXISTS institution_name TEXT;
+      ALTER TABLE net_worth_items ADD COLUMN IF NOT EXISTS subcategory TEXT;
+      ALTER TABLE net_worth_items ADD COLUMN IF NOT EXISTS prior_value INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE net_worth_items ADD COLUMN IF NOT EXISTS change_amount INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE net_worth_items ADD COLUMN IF NOT EXISTS reporting_period TEXT;
+      ALTER TABLE net_worth_items ADD COLUMN IF NOT EXISTS confidence_score INTEGER NOT NULL DEFAULT 100;
+      ALTER TABLE net_worth_items ADD COLUMN IF NOT EXISTS verified BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE net_worth_items ADD COLUMN IF NOT EXISTS source_text_snippet TEXT;
+
+      CREATE TABLE IF NOT EXISTS investor_profiles (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        investor_name TEXT NOT NULL,
+        family_name TEXT,
         created_at TIMESTAMP NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMP NOT NULL DEFAULT NOW()
       );
@@ -115,6 +146,7 @@ export async function runMigrations() {
         created_at TIMESTAMP NOT NULL DEFAULT NOW()
       );
       ALTER TABLE uploaded_documents ADD COLUMN IF NOT EXISTS stored_path TEXT;
+      ALTER TABLE net_worth_items ADD COLUMN IF NOT EXISTS document_id INTEGER REFERENCES uploaded_documents(id) ON DELETE SET NULL;
 
       -- AI Extractions (append-only raw OpenAI response log)
       CREATE TABLE IF NOT EXISTS ai_extractions (
@@ -157,6 +189,16 @@ export async function runMigrations() {
         id SERIAL PRIMARY KEY,
         email TEXT NOT NULL UNIQUE,
         source TEXT NOT NULL DEFAULT 'landing',
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS report_snapshots (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        statement_id INTEGER NOT NULL REFERENCES net_worth_statements(id) ON DELETE CASCADE,
+        report_type TEXT NOT NULL DEFAULT 'net_worth',
+        title TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
         created_at TIMESTAMP NOT NULL DEFAULT NOW()
       );
 

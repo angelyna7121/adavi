@@ -1,268 +1,210 @@
 import { AppLayout } from "@/components/layout/AppLayout";
-import { useState, useRef, useCallback, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useAuth } from "@/hooks/use-auth";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
-import { useToast } from "@/hooks/use-toast";
-import {
-  Upload, Plus, Trash2, Download, Save, Lock, RefreshCw, Crown,
-  FileText, AlertCircle, Check, ChevronRight, ChevronLeft,
-  ArrowRight, Edit2, X, Eye, Image, ArrowUpCircle, ArrowDownCircle,
-} from "lucide-react";
-import { Link, useLocation } from "wouter";
-import * as XLSX from "xlsx";
-import { BG, CARD, CARD2, GOLD, GOLD_BORDER, BORDER, MUTED, DIM } from "@/lib/design";
 import { SignupGateModal } from "@/components/SignupGateModal";
 import { NetWorthUpgradeModal } from "@/components/NetWorthUpgradeModal";
-
+import { useAuth } from "@/hooks/use-auth";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
+import { BG, CARD, CARD2, GOLD, GOLD_BORDER, BORDER, MUTED, DIM } from "@/lib/design";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  AlertCircle, ArrowDownCircle, ArrowRight, ArrowUpCircle, Check, ChevronLeft,
+  Crown, Download, FileText, Lock, Plus, RefreshCw, Save, Trash2, Upload,
+} from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { Link } from "wouter";
 
 type ItemType = "asset" | "liability";
+type Step = "upload" | "review" | "builder";
 
-type LineItem = {
+type StatementLineItem = {
   id: string;
-  label: string;
-  amount: string;
+  documentId?: number | null;
+  sourceType: "parsed" | "manual";
+  investorName: string;
+  familyName: string;
+  institutionName: string;
+  type: ItemType;
   category: string;
-  itemType: ItemType;
+  subcategory: string;
+  name: string;
+  amount: string;
+  priorValue: string;
+  changeAmount: string;
+  reportingPeriod: string;
+  confidenceScore: number;
+  verified: boolean;
+  sourceTextSnippet: string;
   notes: string;
   needsReview: boolean;
   source?: string;
 };
 
-type UploadedFile = {
-  id: string;
-  name: string;
-  size: number;
-  type: string;
-  status: "uploading" | "reading" | "extracting" | "ready" | "needs-review" | "failed";
-  items: LineItem[];
+type ParsedDocument = {
+  documentId?: number | null;
+  originalName: string;
+  status: "ready" | "needs-review" | "error";
   error?: string;
+  warnings?: string[];
+  saved?: boolean;
 };
 
-const STATUSES: Record<UploadedFile["status"], string> = {
-  uploading: "Uploading…",
-  reading: "Reading document…",
-  extracting: "Extracting financial details…",
-  ready: "Ready for review",
-  "needs-review": "Needs manual review",
-  failed: "Failed",
-};
+const GREEN = "#4ADE80";
+const RED = "#F87171";
+const ACCEPTED = ".pdf,.jpg,.jpeg,.png,.csv,.xlsx";
+const MAX_SIZE = 10 * 1024 * 1024;
+const DEFAULT_PERIOD = new Date().toISOString().slice(0, 7);
 
-const STATUS_COLORS: Record<UploadedFile["status"], string> = {
-  uploading: MUTED,
-  reading: MUTED,
-  extracting: GOLD,
-  ready: "#4ADE80",
-  "needs-review": "#FBBF24",
-  failed: "#F87171",
-};
+const CATEGORIES = [
+  "Bank Accounts", "Cash", "Registered Accounts", "Investments", "Pension & Retirement",
+  "Real Estate", "Vehicles", "Business Ownership", "Receivables", "Mortgages",
+  "Credit Cards", "Loans & Lines of Credit", "Student Loans", "Taxes Owing", "Other",
+];
 
-function makeId() { return Math.random().toString(36).slice(2, 9); }
+const SUBCATEGORIES = [
+  "Chequing", "Savings", "TFSA", "RRSP", "FHSA", "RESP", "Brokerage", "Primary Residence",
+  "Rental Property", "Mortgage", "Line of Credit", "Credit Card", "Private Loan", "Other",
+];
+
+function makeId() {
+  return Math.random().toString(36).slice(2, 10);
+}
 
 function fmt(n: number) {
-  return "$" + n.toLocaleString("en-CA", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  return "$" + Math.round(n).toLocaleString("en-CA", { maximumFractionDigits: 0 });
 }
 
 function fmtSize(bytes: number) {
-  if (bytes < 1024) return bytes + " B";
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function classifyLabel(label: string): ItemType {
-  const l = label.toLowerCase();
-  const liabilityWords = ["mortgage balance", "mortgage payable", "home mortgage", "rental mortgage", "loan balance",
-    "amount owing", "debt", "credit card", "line of credit", "student loan", "car loan", "tax payable",
-    "business loan", "shareholder loan payable"];
-  for (const w of liabilityWords) { if (l.includes(w)) return "liability"; }
-  return "asset";
+function money(v: string | number | undefined) {
+  const n = Math.round(Number(v || 0));
+  return Number.isFinite(n) ? n : 0;
 }
 
-function parseCSVText(text: string, fileName: string): LineItem[] {
-  const lines = text.split(/\r?\n/).filter(l => l.trim());
-  const items: LineItem[] = [];
-  const firstRow = lines[0]?.toLowerCase() || "";
-  const hasHeader = firstRow.includes("description") || firstRow.includes("label") || firstRow.includes("name") || firstRow.includes("amount") || firstRow.includes("type");
-  const dataLines = hasHeader ? lines.slice(1) : lines;
-
-  dataLines.forEach(line => {
-    const cols = line.split(/[,\t]/).map(c => c.replace(/^"|"$/g, "").trim());
-    if (cols.length < 2) return;
-    const label = cols[0];
-    let amountStr = "";
-    let typeHint: ItemType | null = null;
-    let category = "";
-    let notes = "";
-
-    for (let i = 1; i < cols.length; i++) {
-      const cleaned = cols[i].replace(/[$,\s]/g, "");
-      const lower = cols[i].toLowerCase();
-      if (!isNaN(parseFloat(cleaned)) && cleaned !== "" && amountStr === "") amountStr = cleaned;
-      if (lower === "asset") typeHint = "asset";
-      if (lower === "liability" || lower === "debt") typeHint = "liability";
-      if (i === 2 && !["asset","liability","debt"].includes(lower)) category = cols[i];
-      if (i === 3) notes = cols[i];
-    }
-
-    if (!label || amountStr === "") return;
-    const amount = parseFloat(amountStr);
-    const itemType: ItemType = typeHint ?? (amount < 0 ? "liability" : classifyLabel(label));
-    items.push({ id: makeId(), label, amount: Math.abs(amount).toString(), category, itemType, notes, needsReview: false, source: fileName });
-  });
-  return items;
+function paid(user: any) {
+  return user?.subscriptionStatus === "active" && (user?.planType === "monthly" || user?.planType === "annual");
 }
 
-function parseXLSXBuffer(buf: ArrayBuffer, fileName: string): LineItem[] {
-  const wb = XLSX.read(buf, { type: "array" });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows: string[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" }) as string[][];
-  if (rows.length < 2) return [];
+function blankItem(type: ItemType = "asset"): StatementLineItem {
+  return {
+    id: makeId(),
+    sourceType: "manual",
+    investorName: "Primary Investor",
+    familyName: "",
+    institutionName: "",
+    type,
+    category: "Other",
+    subcategory: "",
+    name: "",
+    amount: "",
+    priorValue: "",
+    changeAmount: "0",
+    reportingPeriod: DEFAULT_PERIOD,
+    confidenceScore: 100,
+    verified: false,
+    sourceTextSnippet: "",
+    notes: "",
+    needsReview: false,
+  };
+}
 
-  const headerRow = rows[0].map(h => String(h).toLowerCase().trim());
-  const descIdx = headerRow.findIndex(h => ["description","name","account","item","label"].some(k => h.includes(k)));
-  const amtIdx = headerRow.findIndex(h => ["amount","balance","market value","value","mortgage balance","loan balance"].some(k => h.includes(k)));
-  const typeIdx = headerRow.findIndex(h => ["type","category","class"].some(k => h.includes(k)));
-  const notesIdx = headerRow.findIndex(h => ["notes","note","comment"].some(k => h.includes(k)));
+function normalizeParsedItem(raw: any): StatementLineItem {
+  const amount = money(raw.amount);
+  const priorValue = money(raw.priorValue);
+  return {
+    id: raw.tempId || makeId(),
+    documentId: raw.documentId ?? null,
+    sourceType: "parsed",
+    investorName: raw.investorName || "Primary Investor",
+    familyName: raw.familyName || "",
+    institutionName: raw.institutionName || "",
+    type: raw.type === "liability" ? "liability" : "asset",
+    category: raw.category || "Other",
+    subcategory: raw.subcategory || "",
+    name: raw.name || "Review item",
+    amount: String(amount || ""),
+    priorValue: String(priorValue || ""),
+    changeAmount: String(money(raw.changeAmount || amount - priorValue)),
+    reportingPeriod: raw.reportingPeriod || DEFAULT_PERIOD,
+    confidenceScore: Math.max(0, Math.min(100, Number(raw.confidenceScore ?? 60))),
+    verified: !!raw.verified,
+    sourceTextSnippet: raw.sourceTextSnippet || "",
+    notes: raw.notes || "",
+    needsReview: !!raw.needsReview || Number(raw.confidenceScore ?? 0) < 70,
+    source: raw.source,
+  };
+}
 
-  const items: LineItem[] = [];
-  for (let r = 1; r < rows.length; r++) {
-    const row = rows[r];
-    const label = String(row[descIdx] ?? row[0] ?? "").trim();
-    const amtRaw = String(row[amtIdx >= 0 ? amtIdx : 1] ?? "").replace(/[$,\s]/g, "");
-    const typeRaw = String(row[typeIdx] ?? "").toLowerCase().trim();
-    const notes = notesIdx >= 0 ? String(row[notesIdx] ?? "") : "";
-    if (!label || !amtRaw || isNaN(parseFloat(amtRaw))) continue;
-    const amount = parseFloat(amtRaw);
-    const itemType: ItemType = typeRaw === "liability" || typeRaw === "debt" ? "liability"
-      : typeRaw === "asset" ? "asset"
-      : amount < 0 ? "liability"
-      : classifyLabel(label);
-    items.push({ id: makeId(), label, amount: Math.abs(amount).toString(), category: "", itemType, notes, needsReview: false, source: fileName });
+function groupItems(items: StatementLineItem[]) {
+  const grouped = new Map<string, Map<ItemType, Map<string, Map<string, StatementLineItem[]>>>>();
+  for (const item of items) {
+    const investor = item.investorName || "Primary Investor";
+    const category = item.category || "Other";
+    const subcategory = item.subcategory || "Other";
+    if (!grouped.has(investor)) grouped.set(investor, new Map());
+    const byType = grouped.get(investor)!;
+    if (!byType.has(item.type)) byType.set(item.type, new Map());
+    const byCategory = byType.get(item.type)!;
+    if (!byCategory.has(category)) byCategory.set(category, new Map());
+    const bySub = byCategory.get(category)!;
+    if (!bySub.has(subcategory)) bySub.set(subcategory, []);
+    bySub.get(subcategory)!.push(item);
   }
-  return items;
+  return grouped;
 }
 
-const CATEGORIES = [
-  "Bank Accounts", "Cash", "Savings",
-  "RRSP", "TFSA", "FHSA", "RESP", "RRIF", "LIRA", "GIC",
-  "Investments", "Stocks", "ETFs", "Mutual Funds", "Bonds",
-  "Cryptocurrency", "Precious Metals", "Pension & Retirement",
-  "Real Estate", "Investment Property", "Vehicles",
-  "Business Ownership", "Corporation Shares",
-  "Mortgage Investment", "Private Lending", "Receivables",
-  "Mortgage Debt", "Credit Cards", "Car Loan",
-  "Student Loans", "Business Loan", "Loans & Lines of Credit",
-  "Taxes Owing", "Other",
-];
-
-const GREEN = "#4ADE80";
-const RED   = "#F87171";
-
-function ManualItemCard({ item, onChange, onDelete, onFlipType }: {
-  item: LineItem;
-  onChange: (id: string, field: keyof LineItem, v: string) => void;
+function RowEditor({
+  item, onChange, onDelete,
+}: {
+  item: StatementLineItem;
+  onChange: (id: string, field: keyof StatementLineItem, value: string | boolean) => void;
   onDelete: (id: string) => void;
-  onFlipType: (id: string) => void;
 }) {
-  const isAsset = item.itemType === "asset";
-  const [notesOpen, setNotesOpen] = useState(!!item.notes);
+  const lowConfidence = item.confidenceScore < 70 || item.needsReview;
+  const invalid = item.name.trim().length === 0 || money(item.amount) < 0;
 
   return (
     <div
-      className="rounded-xl border mb-3 overflow-hidden"
-      style={{ background: "rgba(255,255,255,0.02)", borderColor: BORDER }}
-      data-testid={`item-card-${item.id}`}
+      className="min-w-[1120px] grid grid-cols-[130px_125px_140px_115px_135px_130px_180px_110px_110px_105px_90px_44px] gap-2 items-center px-3 py-2 border-b"
+      style={{ borderColor: BORDER, background: lowConfidence ? "rgba(251,191,36,0.07)" : "transparent" }}
     >
-      {/* Row 1: Name + Type + Delete */}
-      <div className="flex items-center gap-3 px-4 pt-3.5 pb-2">
-        <Input
-          value={item.label}
-          onChange={e => onChange(item.id, "label", e.target.value)}
-          className="flex-1 h-auto text-base font-semibold border-0 bg-transparent text-white placeholder:text-white/20 focus-visible:ring-0 px-0 py-0"
-          placeholder="Item name"
-          data-testid={`input-label-${item.id}`}
-        />
-        <button
-          onClick={() => onFlipType(item.id)}
-          className="flex items-center gap-1.5 text-xs font-bold rounded-xl px-3 py-1.5 shrink-0 transition-colors"
-          style={{
-            background: isAsset ? "rgba(74,222,128,0.1)" : "rgba(248,113,113,0.1)",
-            color: isAsset ? GREEN : RED,
-          }}
-          data-testid={`button-type-${item.id}`}
-        >
-          {isAsset ? <ArrowUpCircle className="w-3.5 h-3.5" /> : <ArrowDownCircle className="w-3.5 h-3.5" />}
-          {isAsset ? "Asset" : "Liability"}
-        </button>
-        <button
-          onClick={() => onDelete(item.id)}
-          className="text-white/20 hover:text-red-400 transition-colors shrink-0"
-          data-testid={`button-delete-${item.id}`}
-        >
-          <Trash2 className="w-3.5 h-3.5" />
-        </button>
-      </div>
-
-      {/* Row 2: Category + Amount */}
-      <div className="grid grid-cols-2 gap-3 px-4 pb-3" style={{ borderBottom: `1px solid ${BORDER}` }}>
-        <div>
-          <label className="block text-xs font-semibold uppercase tracking-wider mb-1" style={{ color: DIM }}>
-            Category
-          </label>
-          <select
-            value={item.category}
-            onChange={e => onChange(item.id, "category", e.target.value)}
-            className="w-full text-sm text-white rounded-lg px-2 py-1.5 outline-none border"
-            style={{ background: "rgba(255,255,255,0.04)", borderColor: BORDER }}
-            data-testid={`select-category-${item.id}`}
-          >
-            <option value="" style={{ background: "#1e2535" }}>Select…</option>
-            {CATEGORIES.map(c => (
-              <option key={c} value={c} style={{ background: "#1e2535" }}>{c}</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="block text-xs font-semibold uppercase tracking-wider mb-1" style={{ color: DIM }}>
-            Amount
-          </label>
-          <div className="flex items-center border rounded-lg px-2 py-1.5" style={{ borderColor: BORDER, background: "rgba(255,255,255,0.04)" }}>
-            <span className="text-sm mr-1 shrink-0" style={{ color: MUTED }}>$</span>
-            <Input
-              type="number"
-              min={0}
-              value={item.amount}
-              onChange={e => onChange(item.id, "amount", e.target.value)}
-              className="flex-1 h-auto text-sm text-right border-0 bg-transparent text-white placeholder:text-white/20 focus-visible:ring-0 px-0 py-0"
-              placeholder="0"
-              data-testid={`input-amount-${item.id}`}
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Row 3: Notes */}
-      <div className="px-4 py-2.5">
-        {!notesOpen && !item.notes ? (
-          <button
-            className="text-xs transition-colors hover:text-white/60"
-            style={{ color: DIM }}
-            onClick={() => setNotesOpen(true)}
-          >
-            + Add note
-          </button>
-        ) : (
-          <Input
-            value={item.notes}
-            onChange={e => onChange(item.id, "notes", e.target.value)}
-            className="h-auto w-full text-sm border-0 bg-transparent text-white placeholder:text-white/20 focus-visible:ring-0 px-0 py-0"
-            placeholder="Optional note…"
-            data-testid={`input-notes-${item.id}`}
-          />
-        )}
-      </div>
+      <Input value={item.investorName} onChange={e => onChange(item.id, "investorName", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white" data-testid={`input-investor-${item.id}`} />
+      <select value={item.type} onChange={e => onChange(item.id, "type", e.target.value)} className="h-8 rounded-md border px-2 text-sm text-white" style={{ background: CARD2, borderColor: BORDER }} data-testid={`select-type-${item.id}`}>
+        <option value="asset">Asset</option>
+        <option value="liability">Liability</option>
+      </select>
+      <Input value={item.institutionName} onChange={e => onChange(item.id, "institutionName", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white" data-testid={`input-institution-${item.id}`} />
+      <Input value={item.reportingPeriod} onChange={e => onChange(item.id, "reportingPeriod", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white" placeholder="YYYY-MM" data-testid={`input-period-${item.id}`} />
+      <select value={item.category} onChange={e => onChange(item.id, "category", e.target.value)} className="h-8 rounded-md border px-2 text-sm text-white" style={{ background: CARD2, borderColor: BORDER }} data-testid={`select-category-${item.id}`}>
+        {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+      </select>
+      <select value={item.subcategory} onChange={e => onChange(item.id, "subcategory", e.target.value)} className="h-8 rounded-md border px-2 text-sm text-white" style={{ background: CARD2, borderColor: BORDER }} data-testid={`select-subcategory-${item.id}`}>
+        <option value="">None</option>
+        {SUBCATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+      </select>
+      <Input value={item.name} onChange={e => onChange(item.id, "name", e.target.value)} className={`h-8 bg-white/5 text-white ${invalid ? "border-red-400/50" : "border-white/10"}`} data-testid={`input-name-${item.id}`} />
+      <Input type="number" min={0} value={item.amount} onChange={e => onChange(item.id, "amount", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white text-right" data-testid={`input-current-${item.id}`} />
+      <Input type="number" min={0} value={item.priorValue} onChange={e => onChange(item.id, "priorValue", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white text-right" data-testid={`input-prior-${item.id}`} />
+      <Input type="number" value={item.changeAmount} onChange={e => onChange(item.id, "changeAmount", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white text-right" data-testid={`input-change-${item.id}`} />
+      <button
+        onClick={() => onChange(item.id, "verified", !item.verified)}
+        className="h-8 rounded-md border text-xs font-bold"
+        style={{
+          borderColor: item.verified ? "rgba(74,222,128,0.35)" : BORDER,
+          background: item.verified ? "rgba(74,222,128,0.12)" : "rgba(255,255,255,0.04)",
+          color: item.verified ? GREEN : MUTED,
+        }}
+        data-testid={`button-verify-${item.id}`}
+      >
+        {item.verified ? "Verified" : `${item.confidenceScore}%`}
+      </button>
+      <button onClick={() => onDelete(item.id)} className="text-red-300/60 hover:text-red-300" data-testid={`button-delete-${item.id}`}>
+        <Trash2 className="w-4 h-4" />
+      </button>
     </div>
   );
 }
@@ -272,179 +214,164 @@ export default function NetWorth() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [step, setStep] = useState<Step>("upload");
   const [dragging, setDragging] = useState(false);
   const [showSignupGate, setShowSignupGate] = useState(false);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
-  const [step, setStep] = useState<"upload" | "review" | "builder">("upload");
-  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
-  const [reviewItems, setReviewItems] = useState<LineItem[]>([]);
-  const [allItems, setAllItems] = useState<LineItem[]>([]);
+  const [documents, setDocuments] = useState<ParsedDocument[]>([]);
+  const [reviewItems, setReviewItems] = useState<StatementLineItem[]>([]);
+  const [allItems, setAllItems] = useState<StatementLineItem[]>([]);
+  const [familyName, setFamilyName] = useState("");
+  const [reportingPeriod, setReportingPeriod] = useState(DEFAULT_PERIOD);
+  const [selectedInvestor, setSelectedInvestor] = useState("combined");
+  const [parsing, setParsing] = useState(false);
+  const isPro = paid(user);
 
-  const isPro = user?.subscriptionStatus === "active" || user?.subscriptionStatus === "trialing";
+  const visibleItems = selectedInvestor === "combined"
+    ? allItems
+    : allItems.filter(i => (i.investorName || "Primary Investor") === selectedInvestor);
+  const investors = Array.from(new Set(allItems.map(i => i.investorName || "Primary Investor")));
+  const assets = visibleItems.filter(i => i.type === "asset");
+  const liabilities = visibleItems.filter(i => i.type === "liability");
+  const totalAssets = assets.reduce((sum, item) => sum + money(item.amount), 0);
+  const totalLiabilities = liabilities.reduce((sum, item) => sum + money(item.amount), 0);
+  const priorNetWorth = visibleItems.reduce((sum, item) => sum + (item.type === "asset" ? money(item.priorValue) : -money(item.priorValue)), 0);
+  const netWorth = totalAssets - totalLiabilities;
+  const netWorthChange = netWorth - priorNetWorth;
+  const grouped = useMemo(() => groupItems(visibleItems), [visibleItems]);
 
-  const assets  = allItems.filter(i => i.itemType === "asset");
-  const debts   = allItems.filter(i => i.itemType === "liability");
-  const totalAssets = assets.reduce((s, i) => s + (parseFloat(i.amount) || 0), 0);
-  const totalDebts  = debts.reduce((s, i) => s + (parseFloat(i.amount) || 0), 0);
-  const netWorth    = totalAssets - totalDebts;
-
-  const MAX_SIZE = 20 * 1024 * 1024; // 20MB
-  const ACCEPTED = [".pdf", ".jpg", ".jpeg", ".png", ".csv", ".xlsx"];
-
-  function updateUploadedFile(id: string, patch: Partial<UploadedFile>) {
-    setUploadedFiles(prev => prev.map(f => f.id === id ? { ...f, ...patch } : f));
+  function updateReviewItem(id: string, field: keyof StatementLineItem, value: string | boolean) {
+    setReviewItems(prev => prev.map(item => {
+      if (item.id !== id) return item;
+      const next = { ...item, [field]: value } as StatementLineItem;
+      if (field === "amount" || field === "priorValue") next.changeAmount = String(money(next.amount) - money(next.priorValue));
+      return next;
+    }));
   }
 
-  async function processFile(file: File) {
-    const ext = "." + file.name.split(".").pop()?.toLowerCase();
-    if (!ACCEPTED.includes(ext)) {
-      toast({ title: "Unsupported file type", description: `Accepted: PDF, JPG, PNG, CSV, XLSX`, variant: "destructive" });
-      return;
-    }
-    if (file.size > MAX_SIZE) {
-      toast({ title: "File too large", description: "Maximum file size is 20 MB.", variant: "destructive" });
-      return;
-    }
-
-    const fileEntry: UploadedFile = {
-      id: makeId(), name: file.name, size: file.size,
-      type: ext, status: "uploading", items: [],
-    };
-    setUploadedFiles(prev => [...prev, fileEntry]);
-
-    const tick = (status: UploadedFile["status"], delay: number) =>
-      new Promise<void>(res => setTimeout(() => { updateUploadedFile(fileEntry.id, { status }); res(); }, delay));
-
-    await tick("reading", 600);
-    await tick("extracting", 900);
-
-    if (ext === ".csv") {
-      const text = await file.text();
-      const items = parseCSVText(text, file.name);
-      if (items.length === 0) {
-        updateUploadedFile(fileEntry.id, { status: "needs-review", error: "Could not detect columns. Expected: Description, Amount (and optionally Type)." });
-      } else {
-        updateUploadedFile(fileEntry.id, { status: "ready", items });
-      }
-    } else if (ext === ".xlsx") {
-      const buf = await file.arrayBuffer();
-      const items = parseXLSXBuffer(buf, file.name);
-      if (items.length === 0) {
-        updateUploadedFile(fileEntry.id, { status: "needs-review", error: "Could not detect columns. Check that your spreadsheet has Description and Amount columns." });
-      } else {
-        updateUploadedFile(fileEntry.id, { status: "ready", items });
-      }
-    } else {
-      // PDF / image — route to manual review
-      await new Promise(res => setTimeout(res, 800));
-      updateUploadedFile(fileEntry.id, {
-        status: "needs-review",
-        error: "PDF and image files can't be parsed automatically. Please enter your figures using the builder below.",
-      });
-    }
+  function updateItem(id: string, field: keyof StatementLineItem, value: string | boolean) {
+    setAllItems(prev => prev.map(item => {
+      if (item.id !== id) return item;
+      const next = { ...item, [field]: value } as StatementLineItem;
+      if (field === "amount" || field === "priorValue") next.changeAmount = String(money(next.amount) - money(next.priorValue));
+      return next;
+    }));
   }
 
-  function handleFiles(fileList: FileList | null) {
+  async function handleFiles(fileList: FileList | null) {
     if (!fileList) return;
     if (!user) { setShowSignupGate(true); return; }
-    Array.from(fileList).forEach(f => processFile(f));
-  }
+    const files = Array.from(fileList);
+    const invalid = files.find(file => file.size > MAX_SIZE || !ACCEPTED.split(",").some(ext => file.name.toLowerCase().endsWith(ext)));
+    if (invalid) {
+      toast({ title: "Unsupported file", description: "Upload PDF, JPG, PNG, CSV, or XLSX files up to 10 MB.", variant: "destructive" });
+      return;
+    }
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragging(false);
-    handleFiles(e.dataTransfer.files);
-  };
+    const form = new FormData();
+    files.forEach(file => form.append("files", file));
+    setParsing(true);
+    setDocuments(files.map(file => ({ originalName: file.name, status: "ready", warnings: [`${fmtSize(file.size)} queued for parsing`] })));
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    handleFiles(e.target.files);
-    e.target.value = "";
-  };
-
-  const readyItems = uploadedFiles.flatMap(f => f.items);
-  const hasReadyFiles = uploadedFiles.some(f => f.status === "ready");
-
-  function goToReview() {
-    setReviewItems(readyItems.map(i => ({ ...i })));
-    setStep("review");
+    try {
+      const res = await fetch("/api/net-worth/parse", { method: "POST", body: form, credentials: "include" });
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({ message: "Parsing failed." }));
+        throw new Error(error.message || "Parsing failed.");
+      }
+      const payload = await res.json();
+      setDocuments(payload.documents || []);
+      const parsed = (payload.items || []).map(normalizeParsedItem);
+      setReviewItems(parsed.length ? parsed : [blankItem("asset")]);
+      setStep("review");
+      toast({
+        title: parsed.length ? "Document parsed" : "Review needed",
+        description: parsed.length ? `${parsed.length} line item${parsed.length === 1 ? "" : "s"} ready for review.` : "No line items were detected. Add rows manually.",
+      });
+    } catch (err: any) {
+      toast({ title: "Could not parse upload", description: err.message, variant: "destructive" });
+      setDocuments(files.map(file => ({ originalName: file.name, status: "error", error: err.message })));
+    } finally {
+      setParsing(false);
+    }
   }
 
   function confirmReview() {
-    const newItems = reviewItems.map(i => ({ ...i }));
-    setAllItems(prev => [...prev, ...newItems]);
+    const valid = reviewItems.filter(item => item.name.trim() && money(item.amount) >= 0);
+    if (valid.length === 0) {
+      toast({ title: "Add at least one valid row", variant: "destructive" });
+      return;
+    }
+    setAllItems(prev => [...prev, ...valid]);
     setReviewItems([]);
-    setUploadedFiles([]);
+    setDocuments([]);
     setStep("builder");
-    const na = newItems.filter(i => i.itemType === "asset").length;
-    const nd = newItems.filter(i => i.itemType === "liability").length;
-    toast({ title: `${na} asset${na !== 1 ? "s" : ""} and ${nd} liabilit${nd !== 1 ? "ies" : "y"} added.` });
   }
 
-  function updateReviewItem(id: string, field: keyof LineItem, v: string) {
-    setReviewItems(prev => prev.map(i => i.id === id ? { ...i, [field]: v } : i));
-  }
-
-  function deleteReviewItem(id: string) {
-    setReviewItems(prev => prev.filter(i => i.id !== id));
-  }
-
-  function flipReviewType(id: string) {
-    setReviewItems(prev => prev.map(i => i.id === id ? { ...i, itemType: i.itemType === "asset" ? "liability" : "asset" } : i));
-  }
-
-  function updateItem(id: string, field: keyof LineItem, v: string) {
-    setAllItems(prev => prev.map(i => i.id === id ? { ...i, [field]: v } : i));
-  }
-
-  function flipItemType(id: string) {
-    setAllItems(prev => prev.map(i =>
-      i.id === id ? { ...i, itemType: i.itemType === "asset" ? "liability" : "asset" } : i
-    ));
-  }
-
-  function addItem(itemType: ItemType) {
-    setAllItems(prev => [...prev, { id: makeId(), label: "", amount: "", category: "", itemType, notes: "", needsReview: false }]);
-  }
-
-  function deleteItem(id: string) {
-    setAllItems(prev => prev.filter(i => i.id !== id));
-  }
-
-  function recalculate() {
-    // Force a re-render to recompute derived totals; show confirmation
-    setAllItems(prev => [...prev]);
-    toast({ title: "Net worth recalculated", description: `Assets ${fmt(totalAssets)} − Liabilities ${fmt(totalDebts)} = ${fmt(netWorth)}` });
+  function addManualItem(type: ItemType = "asset") {
+    const item = { ...blankItem(type), familyName, reportingPeriod };
+    if (step === "review") setReviewItems(prev => [...prev, item]);
+    else {
+      setAllItems(prev => [...prev, item]);
+      setStep("builder");
+    }
   }
 
   const saveStatement = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/net-worth", {
-      title: `Net Worth Statement — ${new Date().toLocaleDateString("en-CA")}`,
-      assets: assets.map(a => ({ label: a.label, amount: parseFloat(a.amount) || 0, category: "asset" })),
-      liabilities: debts.map(d => ({ label: d.label, amount: parseFloat(d.amount) || 0, category: "liability" })),
-      totalAssets: Math.round(totalAssets),
-      totalLiabilities: Math.round(totalDebts),
-      netWorth: Math.round(netWorth),
-    }),
+    mutationFn: async () => {
+      const payload = {
+        title: `Statement of Net Worth - ${reportingPeriod}`,
+        familyName,
+        reportingPeriod,
+        totalAssets: Math.round(totalAssets),
+        totalLiabilities: Math.round(totalLiabilities),
+        items: allItems.map(item => ({
+          documentId: item.documentId ?? null,
+          sourceType: item.sourceType,
+          investorName: item.investorName,
+          familyName: item.familyName || familyName,
+          institutionName: item.institutionName,
+          type: item.type,
+          category: item.category || "Other",
+          subcategory: item.subcategory,
+          name: item.name,
+          amount: money(item.amount),
+          priorValue: money(item.priorValue),
+          changeAmount: money(item.changeAmount),
+          reportingPeriod: item.reportingPeriod || reportingPeriod,
+          confidenceScore: item.confidenceScore,
+          verified: item.verified,
+          sourceTextSnippet: item.sourceTextSnippet,
+          notes: item.notes,
+        })),
+      };
+      return apiRequest("POST", "/api/net-worth/save", payload);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/net-worth"] });
-      toast({ title: "Statement saved!" });
+      qc.invalidateQueries({ queryKey: ["/api/reports"] });
+      toast({ title: "Statement saved" });
     },
-    onError: () => toast({ title: "Could not save", variant: "destructive" }),
+    onError: (err: any) => toast({ title: "Could not save", description: err.message, variant: "destructive" }),
   });
 
-  const [, setLocation] = useLocation();
-
-  const handleSave = () => {
+  async function handleSave() {
     if (!user) { setShowSignupGate(true); return; }
     if (!isPro) { setShowUpgradeModal(true); return; }
     saveStatement.mutate();
-  };
+  }
 
-  const handleDownload = () => {
+  async function handleExport() {
     if (!user) { setShowSignupGate(true); return; }
-    if (!isPro) { setShowUpgradeModal(true); return; }
-    window.print();
-  };
+    try {
+      await apiRequest("POST", "/api/net-worth/export-check", {});
+      window.print();
+    } catch {
+      setShowUpgradeModal(true);
+    }
+  }
+
+  const assetShare = totalAssets + totalLiabilities === 0 ? 50 : (totalAssets / (totalAssets + totalLiabilities)) * 100;
 
   return (
     <AppLayout>
@@ -452,553 +379,242 @@ export default function NetWorth() {
         @media print {
           nav, header, .no-print { display: none !important; }
           body { background: white !important; color: black !important; }
+          .print-panel { background: white !important; color: #111827 !important; border-color: #d1d5db !important; }
+          .print-text { color: #111827 !important; }
         }
       `}</style>
+      <SignupGateModal open={showSignupGate} onClose={() => setShowSignupGate(false)} title="Create a Free Account to Upload" description="Sign up to upload your documents and build your net worth statement." />
+      <NetWorthUpgradeModal open={showUpgradeModal} onClose={() => setShowUpgradeModal(false)} />
 
-
-        {/* Sign-up gate — anonymous users */}
-        <SignupGateModal
-          open={showSignupGate}
-          onClose={() => setShowSignupGate(false)}
-          title="Create a Free Account to Upload"
-          description="Sign up to upload your documents and build your net worth statement."
-        />
-
-        {/* Upgrade modal — free logged-in users hitting Save / Download */}
-        <NetWorthUpgradeModal
-          open={showUpgradeModal}
-          onClose={() => setShowUpgradeModal(false)}
-        />
-
-        <div className="container mx-auto px-4 py-10 max-w-5xl">
-
-          {/* Header */}
-          <div className="text-center mb-10">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border mb-4 text-xs font-semibold" style={{ background: "rgba(197,163,90,0.08)", borderColor: GOLD_BORDER, color: GOLD }}>
-              Net Worth Builder
-            </div>
-            <h1 className="text-2xl sm:text-4xl font-bold text-white mb-3">What You Own and What You Owe</h1>
-            <p className="text-base max-w-2xl mx-auto" style={{ color: MUTED }}>
-              Upload your financial documents or enter your numbers manually. adavi.ai will help organize everything into a simple net worth statement.
-            </p>
+      <div className="container mx-auto px-4 py-10 max-w-7xl">
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border mb-4 text-xs font-semibold" style={{ background: "rgba(197,163,90,0.08)", borderColor: GOLD_BORDER, color: GOLD }}>
+            Statement of Net Worth
           </div>
+          <h1 className="text-3xl sm:text-5xl font-bold text-white mb-3">Create a Professional Net Worth Statement</h1>
+          <p className="text-base max-w-2xl mx-auto" style={{ color: MUTED }}>Upload statements, review extracted rows, or enter numbers manually.</p>
+        </div>
 
-          {/* Step indicator */}
-          <div className="flex items-center justify-center gap-2 sm:gap-4 mb-10 no-print">
-            {[
-              { key: "upload", label: "1. Upload" },
-              { key: "review", label: "2. Review" },
-              { key: "builder", label: "3. Net Worth" },
-            ].map((s, i, arr) => (
-              <div key={s.key} className="flex items-center gap-2 sm:gap-4">
-                <span className="text-xs sm:text-sm font-semibold"
-                  style={{ color: step === s.key ? GOLD : DIM }}>
-                  {s.label}
-                </span>
-                {i < arr.length - 1 && <ChevronRight className="w-3 h-3 sm:w-4 sm:h-4" style={{ color: DIM }} />}
+        <div className="grid grid-cols-3 gap-2 mb-8 no-print">
+          {["Upload", "Review", "Net Worth"].map((label, idx) => {
+            const active = (idx === 0 && step === "upload") || (idx === 1 && step === "review") || (idx === 2 && step === "builder");
+            return (
+              <div key={label} className="rounded-lg border px-3 py-2 text-center text-sm font-bold" style={{ borderColor: active ? GOLD_BORDER : BORDER, background: active ? "rgba(197,163,90,0.12)" : CARD, color: active ? GOLD : MUTED }}>
+                {idx + 1}. {label}
               </div>
-            ))}
-          </div>
+            );
+          })}
+        </div>
 
-          {/* ────────────────── STEP 1: UPLOAD ────────────────── */}
-          {step === "upload" && (
-            <>
-              {/* Drop zone */}
-              <div
-                className="rounded-2xl border-2 border-dashed px-5 py-7 sm:p-10 flex flex-col items-center gap-4 cursor-pointer transition-all mb-4 no-print"
-                style={{ background: dragging ? "rgba(197,163,90,0.06)" : "rgba(255,255,255,0.02)", borderColor: dragging ? GOLD : GOLD_BORDER }}
-                onDragOver={e => { e.preventDefault(); setDragging(true); }}
-                onDragLeave={() => setDragging(false)}
-                onDrop={handleDrop}
-                onClick={() => fileInputRef.current?.click()}
-                data-testid="upload-zone"
-              >
-                <div className="w-14 h-14 rounded-xl flex items-center justify-center" style={{ background: "rgba(197,163,90,0.12)" }}>
-                  <Upload className="w-7 h-7" style={{ color: GOLD }} />
-                </div>
-                <div className="text-center">
-                  <p className="text-base sm:text-lg font-bold text-white mb-1">Drag & drop your documents here, or click to browse</p>
-                  <p className="text-xs sm:text-sm" style={{ color: DIM }}>Bank statements · Investment statements · Mortgage statements · Credit card statements · Corporate financials</p>
-                </div>
-                <div className="flex gap-3 flex-wrap justify-center">
-                  {["PDF", "JPG", "PNG", "CSV", "XLSX"].map(t => (
-                    <span key={t} className="text-xs font-semibold px-2.5 py-1 rounded-full border" style={{ borderColor: GOLD_BORDER, color: MUTED }}>
-                      {t}
-                    </span>
+        {step === "upload" && (
+          <div className="grid lg:grid-cols-[1.1fr_0.9fr] gap-6">
+            <div
+              onDragOver={e => { e.preventDefault(); setDragging(true); }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={e => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files); }}
+              onClick={() => fileInputRef.current?.click()}
+              className="min-h-[360px] rounded-2xl border-2 border-dashed flex flex-col items-center justify-center text-center cursor-pointer transition-colors"
+              style={{ borderColor: dragging ? GOLD : GOLD_BORDER, background: dragging ? "rgba(197,163,90,0.10)" : CARD }}
+            >
+              <input ref={fileInputRef} type="file" className="hidden" multiple accept={ACCEPTED} onChange={e => { handleFiles(e.target.files); e.target.value = ""; }} data-testid="input-net-worth-upload" />
+              <Upload className="w-12 h-12 mb-4" style={{ color: GOLD }} />
+              <p className="text-xl font-bold text-white mb-2">{parsing ? "Parsing documents..." : "Drop files here or browse"}</p>
+              <p className="text-sm max-w-md" style={{ color: MUTED }}>PDF, JPG, PNG, CSV, XLSX, OCR scans, and Adobe-exported statements up to 10 MB each.</p>
+              {parsing && <RefreshCw className="w-6 h-6 mt-6 animate-spin" style={{ color: GOLD }} />}
+            </div>
+
+            <div className="rounded-2xl border p-6" style={{ background: CARD, borderColor: BORDER }}>
+              <h2 className="text-lg font-bold text-white mb-4">Manual Entry</h2>
+              <div className="grid gap-3 mb-4">
+                <Input value={familyName} onChange={e => setFamilyName(e.target.value)} placeholder="Family or group name" className="bg-white/5 border-white/10 text-white" />
+                <Input value={reportingPeriod} onChange={e => setReportingPeriod(e.target.value)} placeholder="Reporting period, e.g. 2026-07" className="bg-white/5 border-white/10 text-white" />
+              </div>
+              <div className="flex flex-wrap gap-3">
+                <Button onClick={() => addManualItem("asset")} className="font-bold" style={{ background: "rgba(74,222,128,0.12)", color: GREEN, border: "1px solid rgba(74,222,128,0.3)" }} data-testid="button-add-manual-asset">
+                  <Plus className="w-4 h-4 mr-1.5" />Add Asset
+                </Button>
+                <Button onClick={() => addManualItem("liability")} className="font-bold" style={{ background: "rgba(248,113,113,0.12)", color: RED, border: "1px solid rgba(248,113,113,0.3)" }} data-testid="button-add-manual-liability">
+                  <Plus className="w-4 h-4 mr-1.5" />Add Liability
+                </Button>
+              </div>
+              {documents.length > 0 && (
+                <div className="mt-6 space-y-2">
+                  {documents.map(doc => (
+                    <div key={doc.originalName} className="rounded-lg border p-3 text-sm" style={{ borderColor: BORDER, background: CARD2 }}>
+                      <p className="font-semibold text-white">{doc.originalName}</p>
+                      <p style={{ color: doc.status === "error" ? RED : MUTED }}>{doc.error || doc.warnings?.[0] || doc.status}</p>
+                    </div>
                   ))}
                 </div>
-                <p className="text-xs" style={{ color: DIM }}>You can upload multiple documents at once · Max 20 MB per file</p>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  accept=".pdf,.jpg,.jpeg,.png,.csv,.xlsx"
-                  className="hidden"
-                  onChange={handleFileChange}
-                  data-testid="input-file-upload"
-                />
-              </div>
-
-              {/* Uploaded files list */}
-              {uploadedFiles.length > 0 && (
-                <div className="rounded-2xl border p-5 mb-6" style={{ background: CARD, borderColor: BORDER }}>
-                  <p className="text-sm font-semibold text-white mb-4">Uploaded Documents</p>
-                  <div className="space-y-3">
-                    {uploadedFiles.map(f => (
-                      <div key={f.id} className="flex items-center gap-3 text-sm">
-                        <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: "rgba(197,163,90,0.1)" }}>
-                          {[".jpg", ".jpeg", ".png"].includes(f.type) ? <Image className="w-4 h-4" style={{ color: GOLD }} /> : <FileText className="w-4 h-4" style={{ color: GOLD }} />}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-white font-medium truncate">{f.name}</p>
-                          <p className="text-xs" style={{ color: DIM }}>{fmtSize(f.size)}</p>
-                        </div>
-                        <div className="text-right shrink-0">
-                          <p className="text-xs font-semibold" style={{ color: STATUS_COLORS[f.status] }}>
-                            {f.status === "ready" && <Check className="w-3.5 h-3.5 inline mr-1" />}
-                            {STATUSES[f.status]}
-                          </p>
-                          {f.items.length > 0 && (
-                            <p className="text-xs" style={{ color: DIM }}>{f.items.length} items found</p>
-                          )}
-                        </div>
-                        <button onClick={() => setUploadedFiles(prev => prev.filter(x => x.id !== f.id))} className="ml-2 shrink-0 text-white/30 hover:text-white/70">
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-
-                  {uploadedFiles.some(f => f.error) && (
-                    <div className="mt-4 space-y-2">
-                      {uploadedFiles.filter(f => f.error).map(f => (
-                        <div key={f.id} className="flex items-start gap-2 rounded-lg p-3" style={{ background: "rgba(197,163,90,0.06)", borderColor: GOLD_BORDER, border: `1px solid ${GOLD_BORDER}` }}>
-                          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" style={{ color: GOLD }} />
-                          <div>
-                            <p className="text-xs font-semibold text-white">{f.name}</p>
-                            <p className="text-xs mt-0.5" style={{ color: MUTED }}>{f.error}</p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
               )}
+            </div>
+          </div>
+        )}
 
-              {/* CTA to review or skip to builder */}
-              <div className="flex flex-wrap gap-3 mb-10 no-print">
-                {hasReadyFiles && (
-                  <Button onClick={goToReview} className="font-bold" style={{ background: GOLD, color: BG }} data-testid="button-go-review">
-                    <Eye className="w-4 h-4 mr-1.5" />
-                    Review {readyItems.length} Extracted Item{readyItems.length !== 1 ? "s" : ""}
-                    <ChevronRight className="w-4 h-4 ml-1.5" />
-                  </Button>
-                )}
-                <Button
-                  variant="outline"
-                  onClick={() => setStep("builder")}
-                  className="border text-white/70 hover:text-white hover:bg-white/5"
-                  style={{ borderColor: BORDER }}
-                  data-testid="button-skip-to-builder"
-                >
-                  {uploadedFiles.length === 0 ? "Enter Numbers Manually" : "Skip to Manual Entry"}
-                  <ArrowRight className="w-4 h-4 ml-1.5" />
-                </Button>
+        {step === "review" && (
+          <div className="rounded-2xl border overflow-hidden" style={{ background: CARD, borderColor: BORDER }}>
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-5 border-b" style={{ borderColor: BORDER }}>
+              <div>
+                <h2 className="text-xl font-bold text-white">Review Extracted Line Items</h2>
+                <p className="text-sm" style={{ color: MUTED }}>Low-confidence rows are highlighted. Amend values and mark rows verified before generating the statement.</p>
               </div>
-            </>
-          )}
-
-          {/* ────────────────── STEP 2: REVIEW ────────────────── */}
-          {step === "review" && (
-            <div className="mb-10">
-              <div className="flex items-center justify-between mb-6">
-                <div>
-                  <h2 className="text-2xl font-bold text-white mb-1">Review What We Found</h2>
-                  <p className="text-sm" style={{ color: MUTED }}>We organized your documents into what you own and what you owe. Review and correct anything that doesn't look right before we calculate your net worth.</p>
+              <Button onClick={() => addManualItem("asset")} variant="outline" className="text-white border" style={{ borderColor: GOLD_BORDER }} data-testid="button-add-review-row">
+                <Plus className="w-4 h-4 mr-1.5" />Add Row
+              </Button>
+            </div>
+            {reviewItems.length === 0 ? (
+              <div className="p-12 text-center">
+                <FileText className="w-10 h-10 mx-auto mb-3" style={{ color: DIM }} />
+                <p className="text-white font-semibold">No rows yet</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <div className="min-w-[1120px] grid grid-cols-[130px_125px_140px_115px_135px_130px_180px_110px_110px_105px_90px_44px] gap-2 px-3 py-3 text-xs uppercase tracking-wider font-bold" style={{ color: DIM, background: "rgba(255,255,255,0.03)" }}>
+                  <span>Investor</span><span>Status</span><span>Institution</span><span>Period</span><span>Category</span><span>Subcategory</span><span>Description</span><span className="text-right">Current</span><span className="text-right">Prior</span><span className="text-right">Change</span><span>Check</span><span />
                 </div>
-                <Button variant="ghost" size="sm" onClick={() => setStep("upload")} className="text-white/50 hover:text-white shrink-0">
-                  <ChevronLeft className="w-4 h-4 mr-1" />Back
-                </Button>
+                {reviewItems.map(item => <RowEditor key={item.id} item={item} onChange={updateReviewItem} onDelete={id => setReviewItems(prev => prev.filter(i => i.id !== id))} />)}
               </div>
+            )}
+            <div className="flex flex-wrap gap-3 p-5 border-t" style={{ borderColor: BORDER }}>
+              <Button onClick={confirmReview} className="font-bold" style={{ background: GOLD, color: BG }} data-testid="button-generate-statement">
+                <Check className="w-4 h-4 mr-1.5" />Generate Statement
+              </Button>
+              <Button variant="outline" onClick={() => setStep("upload")} className="border text-white/70" style={{ borderColor: BORDER }} data-testid="button-back-upload">
+                <ChevronLeft className="w-4 h-4 mr-1" />Back
+              </Button>
+            </div>
+          </div>
+        )}
 
-              <div className="rounded-2xl border overflow-hidden mb-6" style={{ background: CARD, borderColor: BORDER }}>
-                {/* Table header — desktop only */}
-                <div className="hidden sm:grid grid-cols-12 gap-3 px-4 py-2.5 text-xs font-bold uppercase tracking-widest border-b" style={{ color: DIM, borderColor: BORDER }}>
-                  <div className="col-span-4">Item Name</div>
-                  <div className="col-span-3">Type</div>
-                  <div className="col-span-3 text-right">Amount</div>
-                  <div className="col-span-2 text-right">Actions</div>
+        {step === "builder" && (
+          <>
+            <div className="grid md:grid-cols-3 gap-4 mb-6">
+              {[
+                ["Assets", totalAssets, GREEN, <ArrowUpCircle className="w-5 h-5" />],
+                ["Net Worth", netWorth, GOLD, <Crown className="w-5 h-5" />],
+                ["Liabilities", totalLiabilities, RED, <ArrowDownCircle className="w-5 h-5" />],
+              ].map(([label, value, color, icon]) => (
+                <div key={String(label)} className="rounded-2xl border p-5 print-panel" style={{ background: label === "Net Worth" ? "white" : CARD, borderColor: label === "Net Worth" ? GOLD : BORDER }}>
+                  <div className="flex items-center gap-2 mb-3" style={{ color: color as string }}>{icon}<p className="text-xs font-bold uppercase tracking-widest">{String(label)}</p></div>
+                  <p className="text-3xl font-extrabold print-text" style={{ color: label === "Net Worth" ? BG : "white" }}>{fmt(Number(value))}</p>
                 </div>
-                {reviewItems.length === 0 && (
-                  <div className="px-4 py-8 text-center text-sm" style={{ color: DIM }}>No items to review.</div>
-                )}
-                {reviewItems.map(item => (
-                  <div key={item.id} className="px-4 py-3 border-b last:border-b-0" style={{ borderColor: BORDER }}>
-                    {/* Mobile card layout */}
-                    <div className="flex items-start gap-2 sm:hidden">
-                      <div className="flex-1 min-w-0">
-                        <Input
-                          value={item.label}
-                          onChange={e => updateReviewItem(item.id, "label", e.target.value)}
-                          className="h-8 text-sm border-0 bg-transparent text-white focus-visible:ring-0 px-0 placeholder:text-white/25 w-full"
-                          placeholder="Item name"
-                        />
-                        {item.source && <p className="text-xs mt-0.5 truncate" style={{ color: DIM }}>{item.source}</p>}
-                        <div className="flex items-center gap-2 mt-2">
-                          <button
-                            onClick={() => flipReviewType(item.id)}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition-colors"
-                            style={{
-                              background: item.itemType === "asset" ? "rgba(74,222,128,0.1)" : "rgba(248,113,113,0.1)",
-                              borderColor: item.itemType === "asset" ? "rgba(74,222,128,0.3)" : "rgba(248,113,113,0.3)",
-                              color: item.itemType === "asset" ? "#4ADE80" : "#F87171",
-                            }}
-                            data-testid={`button-flip-type-${item.id}`}
-                          >
-                            {item.itemType === "asset" ? "Asset" : "Liability"}
-                            <Edit2 className="w-2.5 h-2.5" />
-                          </button>
-                          <div className="flex items-center gap-1 ml-auto">
-                            <span className="text-sm" style={{ color: MUTED }}>$</span>
-                            <Input
-                              type="number"
-                              value={item.amount}
-                              onChange={e => updateReviewItem(item.id, "amount", e.target.value)}
-                              className="w-24 h-8 text-sm text-right border-0 bg-transparent text-white focus-visible:ring-0 px-0"
-                              placeholder="0"
-                            />
-                          </div>
-                        </div>
-                      </div>
-                      <button onClick={() => deleteReviewItem(item.id)} className="shrink-0 mt-1 text-red-400/40 hover:text-red-400 transition-colors">
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                    {/* Desktop table row */}
-                    <div className="hidden sm:grid grid-cols-12 gap-3 items-center">
-                      <div className="col-span-4">
-                        <Input
-                          value={item.label}
-                          onChange={e => updateReviewItem(item.id, "label", e.target.value)}
-                          className="h-8 text-sm border-0 bg-transparent text-white focus-visible:ring-0 px-0 placeholder:text-white/25"
-                          placeholder="Item name"
-                        />
-                        {item.source && <p className="text-xs mt-0.5 truncate" style={{ color: DIM }}>{item.source}</p>}
-                      </div>
-                      <div className="col-span-3">
-                        <button
-                          onClick={() => flipReviewType(item.id)}
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition-colors"
-                          style={{
-                            background: item.itemType === "asset" ? "rgba(74,222,128,0.1)" : "rgba(248,113,113,0.1)",
-                            borderColor: item.itemType === "asset" ? "rgba(74,222,128,0.3)" : "rgba(248,113,113,0.3)",
-                            color: item.itemType === "asset" ? "#4ADE80" : "#F87171",
-                          }}
-                          data-testid={`button-flip-type-${item.id}`}
-                        >
-                          {item.itemType === "asset" ? "Asset" : "Liability"}
-                          <Edit2 className="w-2.5 h-2.5" />
-                        </button>
-                      </div>
-                      <div className="col-span-3 flex items-center justify-end gap-1">
-                        <span className="text-sm" style={{ color: MUTED }}>$</span>
-                        <Input
-                          type="number"
-                          value={item.amount}
-                          onChange={e => updateReviewItem(item.id, "amount", e.target.value)}
-                          className="w-24 h-8 text-sm text-right border-0 bg-transparent text-white focus-visible:ring-0 px-0"
-                          placeholder="0"
-                        />
-                      </div>
-                      <div className="col-span-2 flex justify-end gap-2">
-                        <button onClick={() => deleteReviewItem(item.id)} className="text-red-400/40 hover:text-red-400 transition-colors">
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              ))}
+            </div>
 
-              <div className="flex gap-3">
-                <Button onClick={confirmReview} className="font-bold" style={{ background: GOLD, color: BG }} data-testid="button-confirm-review">
-                  <Check className="w-4 h-4 mr-1.5" />
-                  Add {reviewItems.length} Items to Net Worth
-                </Button>
-                <Button variant="outline" onClick={() => setStep("upload")} className="border text-white/70 hover:text-white hover:bg-white/5" style={{ borderColor: BORDER }}>
-                  <ChevronLeft className="w-4 h-4 mr-1" />Back to Upload
-                </Button>
+            <div className="grid lg:grid-cols-[260px_1fr] gap-4 mb-6 no-print">
+              <div className="rounded-xl border p-4" style={{ background: CARD, borderColor: BORDER }}>
+                <label className="text-xs font-bold uppercase tracking-wider" style={{ color: DIM }}>Statement View</label>
+                <select value={selectedInvestor} onChange={e => setSelectedInvestor(e.target.value)} className="w-full mt-2 h-10 rounded-lg border px-3 text-white" style={{ background: CARD2, borderColor: BORDER }} data-testid="select-statement-view">
+                  <option value="combined">Combined Family</option>
+                  {investors.map(name => <option key={name} value={name}>{name}</option>)}
+                </select>
+              </div>
+              <div className="rounded-xl border p-4 grid sm:grid-cols-2 gap-3" style={{ background: CARD, borderColor: BORDER }}>
+                <Input value={familyName} onChange={e => setFamilyName(e.target.value)} placeholder="Family/group name" className="bg-white/5 border-white/10 text-white" data-testid="input-report-family" />
+                <Input value={reportingPeriod} onChange={e => setReportingPeriod(e.target.value)} placeholder="Statement period" className="bg-white/5 border-white/10 text-white" data-testid="input-report-period" />
               </div>
             </div>
-          )}
 
-          {/* ────────────────── STEP 3: BUILDER ────────────────── */}
-          {step === "builder" && (
-            <>
-              {/* Premium Summary Cards */}
-              <div className="grid md:grid-cols-3 gap-4 mb-8 items-stretch">
-
-                {/* What You Own */}
-                <div
-                  className="rounded-2xl border p-6 flex flex-col"
-                  style={{ background: "rgba(74,222,128,0.04)", borderColor: "rgba(74,222,128,0.18)" }}
-                  data-testid="stat-what-you-own"
-                >
-                  <div className="flex items-center gap-2 mb-4">
-                    <div className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0" style={{ background: "rgba(74,222,128,0.12)" }}>
-                      <ArrowUpCircle className="w-4 h-4" style={{ color: GREEN }} />
-                    </div>
-                    <p className="text-xs font-bold uppercase tracking-widest" style={{ color: GREEN }}>What You Own</p>
-                  </div>
-                  <p className="text-4xl font-extrabold tracking-tight text-white mb-1">{fmt(totalAssets)}</p>
-                  <p className="text-xs mt-auto pt-3" style={{ color: DIM }}>Cash · Investments · Real Estate · Business</p>
-                  <div className="mt-3 h-0.5 rounded-full" style={{ background: "rgba(74,222,128,0.15)" }} />
-                  <p className="text-xs font-semibold mt-2" style={{ color: GREEN }}>
-                    {assets.length} asset{assets.length !== 1 ? "s" : ""}
-                  </p>
+            <div className="grid lg:grid-cols-[1fr_360px] gap-6">
+              <div className="rounded-2xl border p-5 print-panel" style={{ background: CARD, borderColor: BORDER }} data-testid="net-worth-report">
+                <div className="mb-5">
+                  <h2 className="text-2xl font-bold text-white print-text">Statement of Net Worth</h2>
+                  <p className="text-sm print-text" style={{ color: MUTED }}>As of {reportingPeriod || DEFAULT_PERIOD} {familyName ? `for ${familyName}` : ""}</p>
                 </div>
-
-                {/* Your Net Worth — dominant center card */}
-                <div
-                  className="rounded-2xl border-2 p-6 flex flex-col relative overflow-hidden"
-                  style={{
-                    background: "white",
-                    borderColor: GOLD,
-                    boxShadow: "0 0 0 1px rgba(197,163,90,0.15), 0 8px 40px rgba(197,163,90,0.28), 0 0 80px rgba(197,163,90,0.12)",
-                  }}
-                  data-testid="stat-your-net-worth"
-                >
-                  {/* Subtle gold radial glow behind content */}
-                  <div className="absolute inset-0 pointer-events-none" style={{
-                    background: "radial-gradient(ellipse at 50% 0%, rgba(197,163,90,0.08) 0%, transparent 70%)"
-                  }} />
-                  <div className="relative z-10 flex flex-col h-full">
-                    <div className="flex items-center gap-2 mb-4">
-                      <Crown className="w-5 h-5" style={{ color: GOLD }} />
-                      <p className="text-xs font-bold uppercase tracking-widest" style={{ color: GOLD }}>Your Net Worth</p>
-                    </div>
-                    <p
-                      className="text-5xl font-extrabold tracking-tight mb-1"
-                      style={{ color: netWorth >= 0 ? "#1a1f2e" : "#c0392b" }}
-                    >
-                      {netWorth < 0 ? "-" : ""}{fmt(Math.abs(netWorth))}
-                    </p>
-                    <p className="text-xs mt-auto pt-3" style={{ color: "#8a8070" }}>Total Assets − Total Liabilities</p>
-                    <div className="mt-3 h-0.5 rounded-full" style={{ background: "rgba(197,163,90,0.3)" }} />
-                    <p className="text-xs font-semibold mt-2" style={{ color: GOLD }}>
-                      {allItems.length} item{allItems.length !== 1 ? "s" : ""} tracked
-                    </p>
-                  </div>
-                </div>
-
-                {/* What You Owe */}
-                <div
-                  className="rounded-2xl border p-6 flex flex-col"
-                  style={{ background: "rgba(248,113,113,0.04)", borderColor: "rgba(248,113,113,0.18)" }}
-                  data-testid="stat-what-you-owe"
-                >
-                  <div className="flex items-center gap-2 mb-4">
-                    <div className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0" style={{ background: "rgba(248,113,113,0.12)" }}>
-                      <ArrowDownCircle className="w-4 h-4" style={{ color: RED }} />
-                    </div>
-                    <p className="text-xs font-bold uppercase tracking-widest" style={{ color: RED }}>What You Owe</p>
-                  </div>
-                  <p className="text-4xl font-extrabold tracking-tight text-white mb-1">{fmt(totalDebts)}</p>
-                  <p className="text-xs mt-auto pt-3" style={{ color: DIM }}>Mortgage · Loans · Credit Cards · Taxes</p>
-                  <div className="mt-3 h-0.5 rounded-full" style={{ background: "rgba(248,113,113,0.15)" }} />
-                  <p className="text-xs font-semibold mt-2" style={{ color: RED }}>
-                    {debts.length} liabilit{debts.length !== 1 ? "ies" : "y"}
-                  </p>
-                </div>
-              </div>
-
-              {/* Primary action buttons row */}
-              <div className="flex flex-wrap gap-3 mb-8 no-print">
-                <Button
-                  onClick={() => addItem("asset")}
-                  className="font-bold gap-2"
-                  style={{ background: "rgba(74,222,128,0.12)", color: GREEN, border: `1px solid rgba(74,222,128,0.3)` }}
-                  data-testid="button-add-asset"
-                >
-                  <ArrowUpCircle className="w-4 h-4" />
-                  Add Asset
-                </Button>
-                <Button
-                  onClick={() => addItem("liability")}
-                  className="font-bold gap-2"
-                  style={{ background: "rgba(248,113,113,0.12)", color: RED, border: `1px solid rgba(248,113,113,0.3)` }}
-                  data-testid="button-add-debt"
-                >
-                  <ArrowDownCircle className="w-4 h-4" />
-                  Add Debt
-                </Button>
-                <Button
-                  onClick={recalculate}
-                  variant="outline"
-                  className="gap-2 border text-white/70 hover:text-white hover:bg-white/5"
-                  style={{ borderColor: BORDER }}
-                  data-testid="button-recalculate"
-                >
-                  <RefreshCw className="w-4 h-4" />
-                  Recalculate
-                </Button>
-              </div>
-
-              {/* Assets section */}
-              <div className="mb-8">
-                <div className="flex items-center gap-3 mb-4">
-                  <ArrowUpCircle className="w-5 h-5" style={{ color: GREEN }} />
-                  <h2 className="text-lg font-bold text-white">Assets</h2>
-                  <span className="text-sm font-semibold ml-auto" style={{ color: GREEN }}>{fmt(totalAssets)}</span>
-                  <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full" style={{ background: "rgba(74,222,128,0.1)", color: GREEN }}>
-                    {assets.length} item{assets.length !== 1 ? "s" : ""}
-                  </span>
-                </div>
-
-                {assets.length === 0 ? (
-                  <div
-                    className="rounded-xl border-2 border-dashed flex flex-col items-center justify-center py-10 mb-3 cursor-pointer transition-colors hover:border-green-400/40"
-                    style={{ borderColor: "rgba(74,222,128,0.2)" }}
-                    onClick={() => addItem("asset")}
-                    data-testid="empty-assets-zone"
-                  >
-                    <ArrowUpCircle className="w-8 h-8 mb-3 opacity-30" style={{ color: GREEN }} />
-                    <p className="text-sm font-semibold text-white/40">No assets added yet</p>
-                    <p className="text-xs mt-1" style={{ color: DIM }}>Click to add your first asset</p>
+                {visibleItems.length === 0 ? (
+                  <div className="py-12 text-center">
+                    <AlertCircle className="w-10 h-10 mx-auto mb-3" style={{ color: DIM }} />
+                    <p className="font-semibold text-white print-text">No statement rows yet</p>
                   </div>
                 ) : (
-                  assets.map(item => (
-                    <ManualItemCard
-                      key={item.id}
-                      item={item}
-                      onChange={updateItem}
-                      onDelete={deleteItem}
-                      onFlipType={flipItemType}
-                    />
-                  ))
-                )}
-
-                <Button
-                  onClick={() => addItem("asset")}
-                  variant="outline"
-                  size="sm"
-                  className="gap-2 font-semibold"
-                  style={{ borderColor: "rgba(74,222,128,0.3)", color: GREEN, background: "rgba(74,222,128,0.06)" }}
-                  data-testid="button-add-asset-inline"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  Add Asset
-                </Button>
-              </div>
-
-              {/* Liabilities section */}
-              <div className="mb-8">
-                <div className="flex items-center gap-3 mb-4">
-                  <ArrowDownCircle className="w-5 h-5" style={{ color: RED }} />
-                  <h2 className="text-lg font-bold text-white">Liabilities</h2>
-                  <span className="text-sm font-semibold ml-auto" style={{ color: RED }}>{fmt(totalDebts)}</span>
-                  <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full" style={{ background: "rgba(248,113,113,0.1)", color: RED }}>
-                    {debts.length} item{debts.length !== 1 ? "s" : ""}
-                  </span>
-                </div>
-
-                {debts.length === 0 ? (
-                  <div
-                    className="rounded-xl border-2 border-dashed flex flex-col items-center justify-center py-10 mb-3 cursor-pointer transition-colors hover:border-red-400/40"
-                    style={{ borderColor: "rgba(248,113,113,0.2)" }}
-                    onClick={() => addItem("liability")}
-                    data-testid="empty-debts-zone"
-                  >
-                    <ArrowDownCircle className="w-8 h-8 mb-3 opacity-30" style={{ color: RED }} />
-                    <p className="text-sm font-semibold text-white/40">No liabilities added yet</p>
-                    <p className="text-xs mt-1" style={{ color: DIM }}>Click to add your first debt</p>
+                  <div className="space-y-3">
+                    {Array.from(grouped.entries()).map(([investor, byType]) => (
+                      <details key={investor} open className="rounded-xl border p-3" style={{ borderColor: BORDER }}>
+                        <summary className="cursor-pointer font-bold text-white print-text">{investor}</summary>
+                        {(["asset", "liability"] as ItemType[]).map(type => {
+                          const byCategory = byType.get(type);
+                          if (!byCategory) return null;
+                          return (
+                            <div key={type} className="mt-3">
+                              <p className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: type === "asset" ? GREEN : RED }}>{type === "asset" ? "Assets" : "Liabilities"}</p>
+                              {Array.from(byCategory.entries()).map(([category, bySub]) => (
+                                <details key={category} open className="ml-2 mb-2">
+                                  <summary className="cursor-pointer text-sm font-semibold text-white print-text">{category}</summary>
+                                  {Array.from(bySub.entries()).map(([sub, rows]) => (
+                                    <div key={sub} className="ml-4 mt-2">
+                                      <p className="text-xs font-semibold mb-1" style={{ color: DIM }}>{sub || "Other"}</p>
+                                      {rows.map(row => (
+                                        <div key={row.id} className="grid grid-cols-[1fr_110px_110px_110px] gap-2 py-1.5 border-b text-sm" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
+                                          <span className="text-white print-text">{row.name}<span style={{ color: DIM }}> {row.institutionName ? `- ${row.institutionName}` : ""}</span></span>
+                                          <span className="text-right print-text">{fmt(money(row.amount))}</span>
+                                          <span className="text-right print-text">{fmt(money(row.priorValue))}</span>
+                                          <span className="text-right" style={{ color: money(row.changeAmount) >= 0 ? GREEN : RED }}>{fmt(money(row.changeAmount))}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ))}
+                                </details>
+                              ))}
+                            </div>
+                          );
+                        })}
+                      </details>
+                    ))}
                   </div>
-                ) : (
-                  debts.map(item => (
-                    <ManualItemCard
-                      key={item.id}
-                      item={item}
-                      onChange={updateItem}
-                      onDelete={deleteItem}
-                      onFlipType={flipItemType}
-                    />
-                  ))
                 )}
-
-                <Button
-                  onClick={() => addItem("liability")}
-                  variant="outline"
-                  size="sm"
-                  className="gap-2 font-semibold"
-                  style={{ borderColor: "rgba(248,113,113,0.3)", color: RED, background: "rgba(248,113,113,0.06)" }}
-                  data-testid="button-add-debt-inline"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  Add Debt
-                </Button>
               </div>
 
-              {/* Secondary action buttons */}
-              <div className="flex flex-wrap gap-3 no-print mb-2">
-                <Button variant="outline" className="border text-white/70 hover:text-white hover:bg-white/5" style={{ borderColor: BORDER }} onClick={() => setStep("upload")} data-testid="button-back-upload">
-                  <ChevronLeft className="w-4 h-4 mr-1" />Upload More
-                </Button>
-                <Button
-                  onClick={recalculate}
-                  variant="outline"
-                  className="border text-white/70 hover:text-white hover:bg-white/5 gap-2"
-                  style={{ borderColor: BORDER }}
-                  data-testid="button-recalculate-bottom"
-                >
-                  <RefreshCw className="w-4 h-4" />Recalculate
-                </Button>
-                <Button
-                  onClick={handleSave}
-                  disabled={saveStatement.isPending}
-                  className="font-semibold"
-                  style={{
-                    background: isPro ? "rgba(255,255,255,0.07)" : "rgba(197,163,90,0.08)",
-                    color: isPro ? "white" : GOLD,
-                    border: `1px solid ${isPro ? BORDER : GOLD_BORDER}`,
-                  }}
-                  data-testid="button-save-net-worth"
-                >
-                  {!isPro ? <Lock className="w-4 h-4 mr-1.5" /> : <Save className="w-4 h-4 mr-1.5" />}
-                  {saveStatement.isPending ? "Saving…" : isPro ? "Save Statement" : "Save (Premium)"}
-                </Button>
-                <Button
-                  onClick={handleDownload}
-                  className="font-semibold"
-                  style={{ background: isPro ? GOLD : "rgba(197,163,90,0.12)", color: isPro ? BG : GOLD }}
-                  data-testid="button-download-pdf"
-                >
-                  {!isPro ? <Lock className="w-4 h-4 mr-1.5" /> : <Download className="w-4 h-4 mr-1.5" />}
-                  Download PDF
-                </Button>
-              </div>
-
-              {!isPro && (
-                <div className="rounded-2xl border p-5 mt-4 no-print" style={{ background: "rgba(197,163,90,0.06)", borderColor: GOLD_BORDER }}>
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div className="flex items-center gap-3">
-                      <Crown className="w-6 h-6 shrink-0" style={{ color: GOLD }} />
-                      <p className="text-sm text-white">Upgrade to Premium to save and download professional PDF reports for your accountant.</p>
-                    </div>
-                    <Link href="/pricing">
-                      <Button size="sm" className="font-bold whitespace-nowrap" style={{ background: GOLD, color: BG }} data-testid="button-upgrade-net-worth">
-                        Upgrade — $8.99/mo
-                      </Button>
-                    </Link>
-                  </div>
+              <div className="rounded-2xl border p-5 print-panel" style={{ background: CARD, borderColor: BORDER }}>
+                <h2 className="text-lg font-bold text-white mb-4 print-text">Net Worth Variance Analysis</h2>
+                <div className="w-48 h-48 rounded-full mx-auto mb-5" style={{ background: `conic-gradient(${GOLD} 0 ${assetShare}%, ${RED} ${assetShare}% 100%)` }} />
+                <div className="space-y-3">
+                  <div className="flex justify-between text-sm"><span style={{ color: MUTED }}>Assets</span><b className="text-white print-text">{fmt(totalAssets)}</b></div>
+                  <div className="flex justify-between text-sm"><span style={{ color: MUTED }}>Liabilities</span><b className="text-white print-text">{fmt(totalLiabilities)}</b></div>
+                  <div className="flex justify-between text-sm"><span style={{ color: MUTED }}>Prior net worth</span><b className="text-white print-text">{fmt(priorNetWorth)}</b></div>
+                  <div className="flex justify-between text-sm border-t pt-3" style={{ borderColor: BORDER }}><span style={{ color: MUTED }}>Net worth change</span><b style={{ color: netWorthChange >= 0 ? GREEN : RED }}>{fmt(netWorthChange)}</b></div>
                 </div>
-              )}
-            </>
-          )}
+              </div>
+            </div>
 
-          <p className="text-center text-xs mt-10" style={{ color: DIM }}>
-            Educational estimates only. Not tax, legal, accounting, or investment advice.
-          </p>
-        </div>
+            <div className="flex flex-wrap gap-3 mt-6 no-print">
+              <Button variant="outline" onClick={() => setStep("upload")} className="border text-white/70" style={{ borderColor: BORDER }} data-testid="button-upload-more">
+                <ChevronLeft className="w-4 h-4 mr-1" />Upload More
+              </Button>
+              <Button onClick={() => addManualItem("asset")} className="font-semibold" style={{ background: "rgba(255,255,255,0.07)", color: "white", border: `1px solid ${BORDER}` }} data-testid="button-add-manual-row">
+                <Plus className="w-4 h-4 mr-1.5" />Add Manual Row
+              </Button>
+              <Button onClick={() => setStep("review")} variant="outline" className="border text-white/70" style={{ borderColor: BORDER }} data-testid="button-review-rows">
+                <RefreshCw className="w-4 h-4 mr-1.5" />Review Rows
+              </Button>
+              <Button onClick={handleSave} disabled={saveStatement.isPending || allItems.length === 0} className="font-semibold" style={{ background: isPro ? "rgba(255,255,255,0.07)" : "rgba(197,163,90,0.08)", color: isPro ? "white" : GOLD, border: `1px solid ${isPro ? BORDER : GOLD_BORDER}` }} data-testid="button-save-net-worth">
+                {!isPro ? <Lock className="w-4 h-4 mr-1.5" /> : <Save className="w-4 h-4 mr-1.5" />}
+                {saveStatement.isPending ? "Saving..." : isPro ? "Save Statement" : "Save (Premium)"}
+              </Button>
+              <Button onClick={handleExport} className="font-semibold" style={{ background: isPro ? GOLD : "rgba(197,163,90,0.12)", color: isPro ? BG : GOLD }} data-testid="button-print-download">
+                {!isPro ? <Lock className="w-4 h-4 mr-1.5" /> : <Download className="w-4 h-4 mr-1.5" />}Print / Download
+              </Button>
+            </div>
+
+            {!isPro && (
+              <div className="rounded-2xl border p-5 mt-5 no-print" style={{ background: "rgba(197,163,90,0.06)", borderColor: GOLD_BORDER }}>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <Crown className="w-6 h-6 shrink-0" style={{ color: GOLD }} />
+                    <p className="text-sm text-white">Viewing is free. Upgrade to save reports, download PDFs, and print statements.</p>
+                  </div>
+                  <Link href="/pricing">
+                    <Button size="sm" className="font-bold whitespace-nowrap" style={{ background: GOLD, color: BG }}>Upgrade</Button>
+                  </Link>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        <p className="text-center text-xs mt-10" style={{ color: DIM }}>
+          Educational estimates only. Not tax, legal, accounting, or investment advice.
+        </p>
+      </div>
     </AppLayout>
   );
 }

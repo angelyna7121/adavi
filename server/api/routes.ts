@@ -34,7 +34,7 @@ function requireAuth(req: Request, res: Response, next: NextFunction) {
 }
 
 function isPro(user: any): boolean {
-  return user?.subscriptionStatus === "active" || user?.subscriptionStatus === "trialing";
+  return user?.subscriptionStatus === "active" && (user?.planType === "monthly" || user?.planType === "annual");
 }
 
 function safeUser(user: any): SafeUser {
@@ -269,9 +269,68 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const user = req.user as any;
       if (!isPro(user)) return res.status(403).json({ message: "Pro subscription required to save net worth reports." });
-      const { totalAssets, totalLiabilities } = req.body;
+      const bodySchema = z.object({
+        title: z.string().optional(),
+        familyName: z.string().optional().default(""),
+        reportingPeriod: z.string().optional().default(""),
+        totalAssets: z.number().int().min(0),
+        totalLiabilities: z.number().int().min(0),
+        items: z.array(z.object({
+          documentId: z.number().int().optional().nullable(),
+          sourceType: z.enum(["parsed", "manual"]).default("manual"),
+          investorName: z.string().optional().default("Primary Investor"),
+          familyName: z.string().optional().default(""),
+          institutionName: z.string().optional().default(""),
+          type: z.enum(["asset", "liability"]),
+          category: z.string().optional().default("Other"),
+          subcategory: z.string().optional().default(""),
+          name: z.string().min(1),
+          amount: z.number().int().min(0),
+          priorValue: z.number().int().min(0).optional().default(0),
+          changeAmount: z.number().int().optional().default(0),
+          reportingPeriod: z.string().optional().default(""),
+          confidenceScore: z.number().int().min(0).max(100).optional().default(100),
+          verified: z.boolean().optional().default(false),
+          sourceTextSnippet: z.string().optional().default(""),
+          notes: z.string().optional().default(""),
+        })).default([]),
+      });
+      const parsed = bodySchema.parse(req.body);
       const statement = await storage.getOrCreateNetWorthStatement(user.id);
-      const updated = await storage.updateNetWorthTotals(statement.id, totalAssets ?? 0, totalLiabilities ?? 0);
+      const rows = parsed.items.map((item) => {
+        const { type: enforcedType, category: enforcedCategory } = classifyItem(item.name, item.category, item.type);
+        return {
+          statementId: statement.id,
+          userId: user.id,
+          documentId: item.documentId ?? null,
+          sourceType: item.sourceType,
+          investorName: item.investorName || "Primary Investor",
+          familyName: item.familyName || parsed.familyName || null,
+          institutionName: item.institutionName || null,
+          type: enforcedType,
+          category: enforcedCategory,
+          subcategory: item.subcategory || null,
+          name: item.name,
+          amount: item.amount,
+          priorValue: item.priorValue,
+          changeAmount: item.changeAmount || item.amount - item.priorValue,
+          reportingPeriod: item.reportingPeriod || parsed.reportingPeriod || null,
+          confidenceScore: item.confidenceScore,
+          verified: item.verified,
+          sourceTextSnippet: item.sourceTextSnippet || null,
+          notes: item.notes || null,
+        };
+      });
+      const createdItems = await storage.replaceNetWorthItems(statement.id, user.id, rows);
+      const totalAssets = createdItems.filter(i => i.type === "asset").reduce((sum, i) => sum + i.amount, 0);
+      const totalLiabilities = createdItems.filter(i => i.type === "liability").reduce((sum, i) => sum + i.amount, 0);
+      const updated = await storage.updateNetWorthTotals(statement.id, totalAssets, totalLiabilities);
+
+      await storage.upsertInvestorProfiles(user.id, createdItems.map((item) => ({
+        userId: user.id,
+        investorName: item.investorName || "Primary Investor",
+        familyName: item.familyName,
+      })));
 
       const existing = await storage.getReports(user.id);
       const nwReport = existing.find(r => r.reportType === "net_worth");
@@ -284,10 +343,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           status: "generated",
         });
       }
+      await storage.createReportSnapshot({
+        userId: user.id,
+        statementId: statement.id,
+        reportType: "net_worth",
+        title: parsed.title || "Statement of Net Worth",
+        snapshotJson: JSON.stringify({
+          statement: updated,
+          items: createdItems,
+          familyName: parsed.familyName,
+          reportingPeriod: parsed.reportingPeriod,
+          generatedAt: new Date().toISOString(),
+        }),
+      });
       await storage.trackEvent("net_worth_saved", user.id);
 
-      res.json(updated);
-    } catch (err) { next(err); }
+      res.json({ statement: updated, items: createdItems });
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      next(err);
+    }
+  });
+
+  app.post("/api/net-worth/export-check", requireAuth, async (req, res) => {
+    const user = req.user as any;
+    if (!isPro(user)) return res.status(403).json({ message: "Premium subscription required to print or download net worth reports." });
+    res.json({ ok: true });
   });
 
   // ── Income Strategy ───────────────────────────────────────────
