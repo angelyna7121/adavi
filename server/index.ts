@@ -178,7 +178,7 @@ const pgPool = new pg.Pool({ connectionString: database.url });
 
 app.use(
   session({
-    store: new PgStore({ pool: pgPool, createTableIfMissing: true }),
+    store: new PgStore({ pool: pgPool }),
     secret: sessionConfig.secret,
     resave: false,
     saveUninitialized: false,
