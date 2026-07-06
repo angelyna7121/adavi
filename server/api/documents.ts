@@ -26,7 +26,7 @@ import * as XLSX from "xlsx";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
+const MAX_FILE_SIZE_BYTES = 4 * 1024 * 1024; // Keep multipart requests below Vercel's serverless body limit.
 const MAX_FILES_PER_REQUEST = 10;
 const UPLOAD_ROOT = path.resolve("uploads");
 

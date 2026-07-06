@@ -53,7 +53,8 @@ type ParsedDocument = {
 const GREEN = "#4ADE80";
 const RED = "#F87171";
 const ACCEPTED = ".pdf,.jpg,.jpeg,.png,.csv,.xlsx";
-const MAX_SIZE = 10 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+const IMAGE_TARGET_BYTES = Math.floor(3.6 * 1024 * 1024);
 const DEFAULT_PERIOD = new Date().toISOString().slice(0, 7);
 
 const CATEGORIES = [
@@ -87,6 +88,86 @@ function money(v: string | number | undefined) {
 
 function paid(user: any) {
   return user?.subscriptionStatus === "active" && (user?.planType === "monthly" || user?.planType === "annual");
+}
+
+function hasAcceptedExtension(file: File) {
+  const name = file.name.toLowerCase();
+  return ACCEPTED.split(",").some(ext => name.endsWith(ext));
+}
+
+function isImageFile(file: File) {
+  const type = file.type.toLowerCase();
+  const name = file.name.toLowerCase();
+  return type.startsWith("image/") || name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg");
+}
+
+function loadImage(file: File): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Could not read image for OCR upload."));
+    };
+    img.src = url;
+  });
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("Could not prepare image for OCR upload."));
+    }, type, quality);
+  });
+}
+
+async function prepareFileForUpload(file: File): Promise<{ file: File; warning?: string }> {
+  if (!hasAcceptedExtension(file)) {
+    throw new Error("Upload PDF, JPG, PNG, CSV, or XLSX files.");
+  }
+
+  if (file.size <= MAX_UPLOAD_BYTES) return { file };
+
+  if (!isImageFile(file)) {
+    throw new Error(`${file.name} is ${fmtSize(file.size)}. Live uploads must be ${fmtSize(MAX_UPLOAD_BYTES)} or smaller. For large PDFs, export CSV/XLSX or split/compress the file first.`);
+  }
+
+  const img = await loadImage(file);
+  const scale = Math.min(1, 2200 / Math.max(img.naturalWidth, img.naturalHeight));
+  const width = Math.max(1, Math.round(img.naturalWidth * scale));
+  const height = Math.max(1, Math.round(img.naturalHeight * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Could not prepare image for OCR upload.");
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, width, height);
+  ctx.drawImage(img, 0, 0, width, height);
+
+  let quality = 0.86;
+  let blob = await canvasToBlob(canvas, "image/jpeg", quality);
+  while (blob.size > IMAGE_TARGET_BYTES && quality > 0.45) {
+    quality -= 0.08;
+    blob = await canvasToBlob(canvas, "image/jpeg", quality);
+  }
+
+  if (blob.size > MAX_UPLOAD_BYTES) {
+    throw new Error(`${file.name} is too large for live OCR after compression. Crop or reduce the image, then upload again.`);
+  }
+
+  const originalBase = file.name.replace(/\.[^.]+$/, "");
+  const compressed = new File([blob], `${originalBase}.jpg`, { type: "image/jpeg", lastModified: Date.now() });
+  return {
+    file: compressed,
+    warning: `${file.name} compressed from ${fmtSize(file.size)} to ${fmtSize(compressed.size)} for OCR.`,
+  };
 }
 
 function blankItem(type: ItemType = "asset"): StatementLineItem {
@@ -261,36 +342,54 @@ export default function NetWorth() {
   async function handleFiles(fileList: FileList | null) {
     if (!fileList) return;
     if (!user) { setShowSignupGate(true); return; }
-    const files = Array.from(fileList);
-    const invalid = files.find(file => file.size > MAX_SIZE || !ACCEPTED.split(",").some(ext => file.name.toLowerCase().endsWith(ext)));
-    if (invalid) {
-      toast({ title: "Unsupported file", description: "Upload PDF, JPG, PNG, CSV, or XLSX files up to 10 MB.", variant: "destructive" });
-      return;
-    }
-
-    const form = new FormData();
-    files.forEach(file => form.append("files", file));
+    const originalFiles = Array.from(fileList);
     setParsing(true);
-    setDocuments(files.map(file => ({ originalName: file.name, status: "ready", warnings: [`${fmtSize(file.size)} queued for parsing`] })));
 
     try {
-      const res = await fetch("/api/net-worth/parse", { method: "POST", body: form, credentials: "include" });
-      if (!res.ok) {
-        const error = await res.json().catch(() => ({ message: "Parsing failed." }));
-        throw new Error(error.message || "Parsing failed.");
+      const prepared = await Promise.all(originalFiles.map(prepareFileForUpload));
+      const allDocuments: ParsedDocument[] = prepared.map(({ file, warning }, index) => ({
+        originalName: originalFiles[index].name,
+        status: "ready",
+        warnings: [warning || `${fmtSize(file.size)} queued for parsing`],
+      }));
+      const allParsed: StatementLineItem[] = [];
+
+      setDocuments(allDocuments);
+
+      for (let i = 0; i < prepared.length; i += 1) {
+        const { file } = prepared[i];
+        const originalName = originalFiles[i].name;
+        const form = new FormData();
+        form.append("files", file);
+        const res = await fetch("/api/net-worth/parse", { method: "POST", body: form, credentials: "include" });
+        if (!res.ok) {
+          const error = await res.json().catch(() => ({
+            message: res.status === 413
+              ? "This file is too large for the live parser. Try a smaller image, CSV, or XLSX export."
+              : "Parsing failed.",
+          }));
+          throw new Error(error.message || "Parsing failed.");
+        }
+
+        const payload = await res.json();
+        const docs = (payload.documents || []).map((doc: ParsedDocument) => ({
+          ...doc,
+          originalName: doc.originalName === file.name ? originalName : doc.originalName,
+        }));
+        allDocuments[i] = docs[0] || allDocuments[i];
+        allParsed.push(...(payload.items || []).map(normalizeParsedItem));
+        setDocuments([...allDocuments]);
       }
-      const payload = await res.json();
-      setDocuments(payload.documents || []);
-      const parsed = (payload.items || []).map(normalizeParsedItem);
-      setReviewItems(parsed.length ? parsed : [blankItem("asset")]);
+
+      setReviewItems(allParsed.length ? allParsed : [blankItem("asset")]);
       setStep("review");
       toast({
-        title: parsed.length ? "Document parsed" : "Review needed",
-        description: parsed.length ? `${parsed.length} line item${parsed.length === 1 ? "" : "s"} ready for review.` : "No line items were detected. Add rows manually.",
+        title: allParsed.length ? "Document parsed" : "Review needed",
+        description: allParsed.length ? `${allParsed.length} line item${allParsed.length === 1 ? "" : "s"} ready for review.` : "No line items were detected. Add rows manually.",
       });
     } catch (err: any) {
       toast({ title: "Could not parse upload", description: err.message, variant: "destructive" });
-      setDocuments(files.map(file => ({ originalName: file.name, status: "error", error: err.message })));
+      setDocuments(originalFiles.map(file => ({ originalName: file.name, status: "error", error: err.message })));
     } finally {
       setParsing(false);
     }
@@ -419,7 +518,7 @@ export default function NetWorth() {
               <input ref={fileInputRef} type="file" className="hidden" multiple accept={ACCEPTED} onChange={e => { handleFiles(e.target.files); e.target.value = ""; }} data-testid="input-net-worth-upload" />
               <Upload className="w-12 h-12 mb-4" style={{ color: GOLD }} />
               <p className="text-xl font-bold text-white mb-2">{parsing ? "Parsing documents..." : "Drop files here or browse"}</p>
-              <p className="text-sm max-w-md" style={{ color: MUTED }}>PDF, JPG, PNG, CSV, XLSX, OCR scans, and Adobe-exported statements up to 10 MB each.</p>
+              <p className="text-sm max-w-md" style={{ color: MUTED }}>PDF, JPG, PNG, CSV, XLSX, OCR scans, and Adobe-exported statements up to 4 MB each. Large images are compressed before OCR.</p>
               {parsing && <RefreshCw className="w-6 h-6 mt-6 animate-spin" style={{ color: GOLD }} />}
             </div>
 
