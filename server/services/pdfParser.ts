@@ -31,7 +31,76 @@ type PDFParseConstructor = new (opts: { data: Buffer | Uint8Array }) => {
 
 let pdfParsePromise: Promise<PDFParseConstructor> | null = null;
 
+class NodeDOMMatrix {
+  a = 1;
+  b = 0;
+  c = 0;
+  d = 1;
+  e = 0;
+  f = 0;
+
+  constructor(init?: number[]) {
+    if (Array.isArray(init)) {
+      [this.a, this.b, this.c, this.d, this.e, this.f] = [
+        Number(init[0] ?? 1),
+        Number(init[1] ?? 0),
+        Number(init[2] ?? 0),
+        Number(init[3] ?? 1),
+        Number(init[4] ?? 0),
+        Number(init[5] ?? 0),
+      ];
+    }
+  }
+
+  multiplySelf() { return this; }
+  preMultiplySelf() { return this; }
+  translate() { return this; }
+  scale() { return this; }
+  invertSelf() { return this; }
+}
+
+class NodeImageData {
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+  colorSpace = "srgb";
+
+  constructor(dataOrWidth: Uint8ClampedArray | number, widthOrHeight: number, height?: number) {
+    if (typeof dataOrWidth === "number") {
+      this.width = dataOrWidth;
+      this.height = widthOrHeight;
+      this.data = new Uint8ClampedArray(this.width * this.height * 4);
+    } else {
+      this.data = dataOrWidth;
+      this.width = widthOrHeight;
+      this.height = height ?? 0;
+    }
+  }
+}
+
+class NodePath2D {
+  addPath() {}
+  arc() {}
+  arcTo() {}
+  ellipse() {}
+  moveTo() {}
+  lineTo() {}
+  bezierCurveTo() {}
+  quadraticCurveTo() {}
+  rect() {}
+  roundRect() {}
+  closePath() {}
+}
+
+function installPdfJsNodeGlobals() {
+  const globalScope = globalThis as any;
+  globalScope.DOMMatrix ??= NodeDOMMatrix;
+  globalScope.ImageData ??= NodeImageData;
+  globalScope.Path2D ??= NodePath2D;
+}
+
 function getPDFParse(): Promise<PDFParseConstructor> {
+  installPdfJsNodeGlobals();
   pdfParsePromise ??= import("pdf-parse").then((mod) => mod.PDFParse as unknown as PDFParseConstructor);
   return pdfParsePromise;
 }
@@ -184,9 +253,10 @@ export function parseFinancialText(rawText: string): TextParseResult {
  * can be retrieved. Used by the AI extraction pipeline.
  */
 export async function extractPdfText(buf: Buffer): Promise<string> {
-  const PDFParse = await getPDFParse();
-  const parser = new PDFParse({ data: buf });
+  let parser: InstanceType<PDFParseConstructor> | null = null;
   try {
+    const PDFParse = await getPDFParse();
+    parser = new PDFParse({ data: buf });
     await parser.load();
     const result = await parser.getText({ disableCombineTextItems: false });
     const text = (result.text ?? "").replace(/\s+/g, " ").trim();
@@ -197,7 +267,7 @@ export async function extractPdfText(buf: Buffer): Promise<string> {
   } catch {
     return "";
   } finally {
-    await parser.destroy().catch(() => {});
+    await parser?.destroy().catch(() => {});
   }
 }
 
@@ -219,9 +289,10 @@ export async function parsePDFBuffer(buf: Buffer): Promise<PdfParseResult> {
   let rawText = "";
   let extractionFailed = false;
 
-  const PDFParse = await getPDFParse();
-  const parser = new PDFParse({ data: buf });
+  let parser: InstanceType<PDFParseConstructor> | null = null;
   try {
+    const PDFParse = await getPDFParse();
+    parser = new PDFParse({ data: buf });
     await parser.load();
     const result = await parser.getText({ disableCombineTextItems: false });
     rawText = result.text ?? "";
@@ -230,7 +301,7 @@ export async function parsePDFBuffer(buf: Buffer): Promise<PdfParseResult> {
     extractionFailed = true;
     warnings.push(`PDF text extraction error: ${err?.message ?? "unknown error"}`);
   } finally {
-    await parser.destroy().catch(() => {});
+    await parser?.destroy().catch(() => {});
   }
 
   const strippedText = rawText.replace(/\s+/g, " ").trim();

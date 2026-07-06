@@ -89,6 +89,46 @@ async function ensureUserDir(userId: number): Promise<string> {
 /** Human-readable MIME list for error messages. */
 const ALLOWED_MIME_LIST = [...new Set(Object.values(ALLOWED_MIMES))].join(", ").toUpperCase();
 
+async function parseImageBuffer(buf: Buffer, ext: "jpg" | "png"): Promise<{
+  result: Record<string, unknown>;
+  documentText: string;
+}> {
+  const sourceLabel = ext.toUpperCase();
+  try {
+    const ocrText = await ocrImageBuffer(buf);
+    const parsed = parseFinancialText(ocrText);
+    return {
+      documentText: ocrText,
+      result: {
+        imageOnly: false,
+        ocrUsed: true,
+        items: parsed.items,
+        totalRows: parsed.totalRows,
+        skippedRows: parsed.skippedRows,
+        warnings: [
+          `Text recognized from ${sourceLabel} image via OCR. Review values before saving.`,
+          ...parsed.warnings,
+        ],
+      } as unknown as Record<string, unknown>,
+    };
+  } catch (err: any) {
+    return {
+      documentText: "",
+      result: {
+        imageOnly: true,
+        ocrUsed: false,
+        items: [],
+        totalRows: 0,
+        skippedRows: 0,
+        warnings: [
+          `${sourceLabel} OCR failed: ${err?.message ?? "unknown error"}`,
+          "Try a clearer image, or upload a CSV/XLSX export from your financial institution.",
+        ],
+      } as unknown as Record<string, unknown>,
+    };
+  }
+}
+
 async function parseFinancialFile(file: Express.Multer.File, ext: string): Promise<{
   result: Record<string, unknown>;
   documentText: string;
@@ -106,17 +146,7 @@ async function parseFinancialFile(file: Express.Multer.File, ext: string): Promi
     result = await parsePDFBuffer(file.buffer) as unknown as Record<string, unknown>;
     documentText = await extractPdfText(file.buffer);
   } else if (ext === "jpg" || ext === "png") {
-    const ocrText = await ocrImageBuffer(file.buffer);
-    documentText = ocrText;
-    const parsed = parseFinancialText(ocrText);
-    result = {
-      imageOnly: false,
-      ocrUsed: true,
-      items: parsed.items,
-      totalRows: parsed.totalRows,
-      skippedRows: parsed.skippedRows,
-      warnings: [`Text recognized from ${ext.toUpperCase()} image via OCR. Review values before saving.`, ...parsed.warnings],
-    } as unknown as Record<string, unknown>;
+    return parseImageBuffer(file.buffer, ext);
   } else {
     result = parseCSVBuffer(file.buffer) as unknown as Record<string, unknown>;
     documentText = file.buffer.toString("utf-8");
@@ -479,22 +509,9 @@ export function registerDocumentRoutes(app: Express) {
         documentText = await extractPdfText(buf);
 
       } else if (doc.fileType === "jpg" || doc.fileType === "png") {
-        const ocrText = await ocrImageBuffer(buf);
-        documentText = ocrText;
-        const parsed = parseFinancialText(ocrText);
-        const sourceLabel = doc.fileType.toUpperCase();
-        result = {
-          imageOnly: false,
-          ocrUsed: true,
-          items: parsed.items,
-          totalRows: parsed.totalRows,
-          skippedRows: parsed.skippedRows,
-          warnings: [
-            `Text recognized from ${sourceLabel} image via OCR. ` +
-            "OCR accuracy depends on image quality — please review all values carefully.",
-            ...parsed.warnings,
-          ],
-        } as unknown as Record<string, unknown>;
+        const parsedImage = await parseImageBuffer(buf, doc.fileType as "jpg" | "png");
+        result = parsedImage.result;
+        documentText = parsedImage.documentText;
 
       } else {
         result = parseCSVBuffer(buf) as unknown as Record<string, unknown>;
