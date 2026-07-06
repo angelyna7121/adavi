@@ -233,6 +233,29 @@ export function registerDocumentRoutes(app: Express) {
       try {
         const user = req.user as any;
         const files = req.files as Express.Multer.File[];
+        const clientOcrText = typeof req.body?.ocrText === "string" ? req.body.ocrText : "";
+        const clientOcrName = typeof req.body?.originalName === "string" ? req.body.originalName : "image upload";
+        if ((!files || files.length === 0) && clientOcrText.trim()) {
+          const result = parseFinancialText(clientOcrText) as unknown as Record<string, unknown>;
+          const mapped = toStatementItems(result, clientOcrName, null);
+          return res.json({
+            documents: [{
+              documentId: null,
+              originalName: clientOcrName,
+              status: mapped.length ? "ready" : "needs-review",
+              warnings: [
+                "Text was recognized from the image in your browser. Review values before saving.",
+                ...((result.warnings as string[] | undefined) ?? []),
+              ],
+              totalRows: result.totalRows ?? 0,
+              skippedRows: result.skippedRows ?? 0,
+              saved: false,
+            }],
+            items: mapped,
+            savedPermanently: false,
+          });
+        }
+
         if (!files || files.length === 0) {
           return res.status(400).json({ message: "No files received. Send files in the 'files' field." });
         }

@@ -126,6 +126,33 @@ function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality: number):
   });
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      value => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      err => {
+        window.clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+async function recognizeImageInBrowser(file: File): Promise<string> {
+  const { createWorker } = await import("tesseract.js");
+  const worker = await createWorker("eng", 1, { logger: () => {} });
+  try {
+    const { data } = await worker.recognize(file);
+    return data.text || "";
+  } finally {
+    await worker.terminate().catch(() => {});
+  }
+}
+
 async function prepareFileForUpload(file: File): Promise<{ file: File; warning?: string }> {
   if (!hasAcceptedExtension(file)) {
     throw new Error("Upload PDF, JPG, PNG, CSV, or XLSX files.");
@@ -360,7 +387,25 @@ export default function NetWorth() {
         const { file } = prepared[i];
         const originalName = originalFiles[i].name;
         const form = new FormData();
-        form.append("files", file);
+        if (isImageFile(originalFiles[i])) {
+          allDocuments[i] = {
+            ...allDocuments[i],
+            warnings: ["Reading text from image in your browser..."],
+          };
+          setDocuments([...allDocuments]);
+          const ocrText = await withTimeout(
+            recognizeImageInBrowser(file),
+            60_000,
+            "Image text recognition timed out. Try a sharper crop of the statement, or upload CSV/XLSX.",
+          );
+          if (!ocrText.trim()) {
+            throw new Error(`${originalName} did not contain readable text. Try a sharper crop or export CSV/XLSX.`);
+          }
+          form.append("ocrText", ocrText);
+          form.append("originalName", originalName);
+        } else {
+          form.append("files", file);
+        }
         const res = await fetch("/api/net-worth/parse", { method: "POST", body: form, credentials: "include" });
         if (!res.ok) {
           const error = await res.json().catch(() => ({
@@ -518,7 +563,7 @@ export default function NetWorth() {
               <input ref={fileInputRef} type="file" className="hidden" multiple accept={ACCEPTED} onChange={e => { handleFiles(e.target.files); e.target.value = ""; }} data-testid="input-net-worth-upload" />
               <Upload className="w-12 h-12 mb-4" style={{ color: GOLD }} />
               <p className="text-xl font-bold text-white mb-2">{parsing ? "Parsing documents..." : "Drop files here or browse"}</p>
-              <p className="text-sm max-w-md" style={{ color: MUTED }}>PDF, JPG, PNG, CSV, XLSX, OCR scans, and Adobe-exported statements up to 4 MB each. Large images are compressed before OCR.</p>
+              <p className="text-sm max-w-md" style={{ color: MUTED }}>PDF, JPG, PNG, CSV, XLSX, OCR scans, and Adobe-exported statements up to 4 MB each. Images are read in your browser before upload.</p>
               {parsing && <RefreshCw className="w-6 h-6 mt-6 animate-spin" style={{ color: GOLD }} />}
             </div>
 
