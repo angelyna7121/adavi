@@ -15,7 +15,6 @@
  *  5. All items are flagged needsReview=true — PDF layout varies widely.
  */
 
-import { PDFParse } from "pdf-parse";
 import type { ParsedItem, ParseResult } from "./csvParser.js";
 import { classifyLabel, inferCategoryExported as inferCategory, parseAmount } from "./csvParser.js";
 import { ocrScannedPdfBuffer } from "./ocrParser.js";
@@ -30,8 +29,11 @@ type PDFParseConstructor = new (opts: { data: Buffer | Uint8Array }) => {
   }>;
 };
 
+let pdfParsePromise: Promise<PDFParseConstructor> | null = null;
+
 function getPDFParse(): Promise<PDFParseConstructor> {
-  return Promise.resolve(PDFParse as unknown as PDFParseConstructor);
+  pdfParsePromise ??= import("pdf-parse").then((mod) => mod.PDFParse as unknown as PDFParseConstructor);
+  return pdfParsePromise;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
