@@ -17,6 +17,13 @@ import { Link } from "wouter";
 
 type ItemType = "asset" | "liability";
 type Step = "upload" | "review" | "builder";
+type ReviewColumnKey =
+  | "investorName" | "type" | "institutionName" | "reportingPeriod" | "category" | "subcategory"
+  | "name" | "amount" | "priorValue" | "changeAmount" | "verified";
+type SemanticColumnType =
+  | "Description" | "Source" | "Investor" | "Category" | "Subcategory" | "Asset/Liability status"
+  | "Current period value" | "Prior period value" | "Fair market value" | "Mortgage / debt value"
+  | "Net value" | "Ownership percentage" | "Ignore";
 
 type StatementLineItem = {
   id: string;
@@ -68,12 +75,44 @@ const SUBCATEGORIES = [
   "Rental Property", "Mortgage", "Line of Credit", "Credit Card", "Private Loan", "Other",
 ];
 
+const SEMANTIC_COLUMN_TYPES: SemanticColumnType[] = [
+  "Description", "Source", "Investor", "Category", "Subcategory", "Asset/Liability status",
+  "Current period value", "Prior period value", "Fair market value", "Mortgage / debt value",
+  "Net value", "Ownership percentage", "Ignore",
+];
+
+const DEFAULT_REVIEW_COLUMNS: Array<{ key: ReviewColumnKey; title: string; semantic: SemanticColumnType; align?: "right" }> = [
+  { key: "investorName", title: "Investor", semantic: "Investor" },
+  { key: "type", title: "Status", semantic: "Asset/Liability status" },
+  { key: "institutionName", title: "Source", semantic: "Source" },
+  { key: "reportingPeriod", title: "Period", semantic: "Ignore" },
+  { key: "category", title: "Category", semantic: "Category" },
+  { key: "subcategory", title: "Subcategory", semantic: "Subcategory" },
+  { key: "name", title: "Description", semantic: "Description" },
+  { key: "amount", title: "Current Period", semantic: "Current period value", align: "right" },
+  { key: "priorValue", title: "Prior Period", semantic: "Prior period value", align: "right" },
+  { key: "changeAmount", title: "Change", semantic: "Net value", align: "right" },
+  { key: "verified", title: "Check", semantic: "Ignore" },
+];
+
 function makeId() {
   return Math.random().toString(36).slice(2, 10);
 }
 
 function fmt(n: number) {
-  return "$" + Math.round(n).toLocaleString("en-CA", { maximumFractionDigits: 0 });
+  return "$" + n.toLocaleString("en-CA", { maximumFractionDigits: 2 });
+}
+
+function fmtNumber(n: string | number | undefined) {
+  const raw = String(n ?? "").replace(/,/g, "").trim();
+  if (!raw) return "";
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return String(n ?? "");
+  const decimals = raw.includes(".") ? Math.min(2, raw.split(".")[1]?.length ?? 0) : 0;
+  return value.toLocaleString("en-CA", {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: Math.max(decimals, 0),
+  });
 }
 
 function fmtSize(bytes: number) {
@@ -82,8 +121,51 @@ function fmtSize(bytes: number) {
 }
 
 function money(v: string | number | undefined) {
-  const n = Math.round(Number(v || 0));
+  const n = Math.round(Number(String(v || 0).replace(/,/g, "")));
   return Number.isFinite(n) ? n : 0;
+}
+
+function normalizeMoneyInput(v: string) {
+  return v.replace(/[^\d.,-]/g, "").replace(/,/g, "");
+}
+
+function displayPeriodDate(raw: string) {
+  const months: Record<string, string> = {
+    jan: "Jan", feb: "Feb", mar: "Mar", apr: "Apr", may: "May", jun: "Jun",
+    jul: "Jul", aug: "Aug", sep: "Sep", oct: "Oct", nov: "Nov", dec: "Dec",
+  };
+  const value = raw.trim();
+  const m = value.match(/\b(\d{1,2})[-\s/]([A-Za-z]{3,9})[-\s/](\d{2,4})\b/);
+  if (m) {
+    const day = m[1].padStart(2, "0");
+    const month = months[m[2].slice(0, 3).toLowerCase()] ?? m[2].slice(0, 3);
+    const year = m[3].length === 2 ? `20${m[3]}` : m[3];
+    return `${day}-${month}-${year}`;
+  }
+  const iso = value.match(/\b(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\b/);
+  if (iso) {
+    const date = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+    return `${String(date.getDate()).padStart(2, "0")}-${date.toLocaleString("en-CA", { month: "short" })}-${date.getFullYear()}`;
+  }
+  return value;
+}
+
+function dateSortValue(raw: string) {
+  const display = displayPeriodDate(raw);
+  const m = display.match(/^(\d{2})-([A-Za-z]{3})-(\d{4})$/);
+  if (!m) return 0;
+  const month = new Date(`${m[2]} 1, ${m[3]}`).getMonth();
+  return new Date(Number(m[3]), month, Number(m[1])).getTime();
+}
+
+function extractPeriodLabels(text: string) {
+  const matches = Array.from(text.matchAll(/\b\d{1,2}[-\s/](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[-\s/]\d{2,4}\b/gi))
+    .map(match => displayPeriodDate(match[0]));
+  const unique = Array.from(new Set(matches)).sort((a, b) => dateSortValue(a) - dateSortValue(b));
+  return {
+    prior: unique[0],
+    current: unique[unique.length - 1],
+  };
 }
 
 function paid(user: any) {
@@ -266,50 +348,85 @@ function groupItems(items: StatementLineItem[]) {
 }
 
 function RowEditor({
-  item, onChange, onDelete,
+  item, columns, onChange, onDelete,
 }: {
   item: StatementLineItem;
+  columns: Array<{ key: ReviewColumnKey; title: string; semantic: SemanticColumnType; align?: "right" }>;
   onChange: (id: string, field: keyof StatementLineItem, value: string | boolean) => void;
   onDelete: (id: string) => void;
 }) {
   const lowConfidence = item.confidenceScore < 70 || item.needsReview;
   const invalid = item.name.trim().length === 0 || money(item.amount) < 0;
+  const gridTemplateColumns = columns.map(column => {
+    if (column.key === "name") return "minmax(220px,1.4fr)";
+    if (column.key === "verified") return "92px";
+    if (column.key === "type") return "130px";
+    if (column.key === "amount" || column.key === "priorValue" || column.key === "changeAmount") return "140px";
+    return "minmax(140px,1fr)";
+  }).join(" ") + " 44px";
+
+  function renderCell(column: { key: ReviewColumnKey }) {
+    switch (column.key) {
+      case "investorName":
+        return <Input value={item.investorName} onChange={e => onChange(item.id, "investorName", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white" data-testid={`input-investor-${item.id}`} />;
+      case "type":
+        return (
+          <select value={item.type} onChange={e => onChange(item.id, "type", e.target.value)} className="h-8 rounded-md border px-2 text-sm text-white" style={{ background: CARD2, borderColor: BORDER }} data-testid={`select-type-${item.id}`}>
+            <option value="asset">Asset</option>
+            <option value="liability">Liability</option>
+          </select>
+        );
+      case "institutionName":
+        return <Input value={item.institutionName} onChange={e => onChange(item.id, "institutionName", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white" data-testid={`input-source-${item.id}`} />;
+      case "reportingPeriod":
+        return <Input value={item.reportingPeriod} onChange={e => onChange(item.id, "reportingPeriod", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white" placeholder="YYYY-MM" data-testid={`input-period-${item.id}`} />;
+      case "category":
+        return (
+          <select value={item.category} onChange={e => onChange(item.id, "category", e.target.value)} className="h-8 rounded-md border px-2 text-sm text-white" style={{ background: CARD2, borderColor: BORDER }} data-testid={`select-category-${item.id}`}>
+            {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        );
+      case "subcategory":
+        return (
+          <select value={item.subcategory} onChange={e => onChange(item.id, "subcategory", e.target.value)} className="h-8 rounded-md border px-2 text-sm text-white" style={{ background: CARD2, borderColor: BORDER }} data-testid={`select-subcategory-${item.id}`}>
+            <option value="">None</option>
+            {SUBCATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        );
+      case "name":
+        return <Input value={item.name} onChange={e => onChange(item.id, "name", e.target.value)} className={`h-8 bg-white/5 text-white ${invalid ? "border-red-400/50" : "border-white/10"}`} data-testid={`input-name-${item.id}`} />;
+      case "amount":
+        return <Input inputMode="decimal" value={fmtNumber(item.amount)} onChange={e => onChange(item.id, "amount", normalizeMoneyInput(e.target.value))} className="h-8 bg-white/5 border-white/10 text-white text-right" data-testid={`input-current-${item.id}`} />;
+      case "priorValue":
+        return <Input inputMode="decimal" value={fmtNumber(item.priorValue)} onChange={e => onChange(item.id, "priorValue", normalizeMoneyInput(e.target.value))} className="h-8 bg-white/5 border-white/10 text-white text-right" data-testid={`input-prior-${item.id}`} />;
+      case "changeAmount":
+        return <Input inputMode="decimal" value={fmtNumber(item.changeAmount)} onChange={e => onChange(item.id, "changeAmount", normalizeMoneyInput(e.target.value))} className="h-8 bg-white/5 border-white/10 text-white text-right" data-testid={`input-change-${item.id}`} />;
+      case "verified":
+        return (
+          <button
+            onClick={() => onChange(item.id, "verified", !item.verified)}
+            className="h-8 rounded-md border text-xs font-bold"
+            style={{
+              borderColor: item.verified ? "rgba(74,222,128,0.35)" : BORDER,
+              background: item.verified ? "rgba(74,222,128,0.12)" : "rgba(255,255,255,0.04)",
+              color: item.verified ? GREEN : MUTED,
+            }}
+            data-testid={`button-verify-${item.id}`}
+          >
+            {item.verified ? "Verified" : `${item.confidenceScore}%`}
+          </button>
+        );
+      default:
+        return null;
+    }
+  }
 
   return (
     <div
-      className="min-w-[1120px] grid grid-cols-[130px_125px_140px_115px_135px_130px_180px_110px_110px_105px_90px_44px] gap-2 items-center px-3 py-2 border-b"
-      style={{ borderColor: BORDER, background: lowConfidence ? "rgba(251,191,36,0.07)" : "transparent" }}
+      className="min-w-[1120px] grid gap-2 items-center px-3 py-2 border-b"
+      style={{ borderColor: BORDER, background: lowConfidence ? "rgba(251,191,36,0.07)" : "transparent", gridTemplateColumns }}
     >
-      <Input value={item.investorName} onChange={e => onChange(item.id, "investorName", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white" data-testid={`input-investor-${item.id}`} />
-      <select value={item.type} onChange={e => onChange(item.id, "type", e.target.value)} className="h-8 rounded-md border px-2 text-sm text-white" style={{ background: CARD2, borderColor: BORDER }} data-testid={`select-type-${item.id}`}>
-        <option value="asset">Asset</option>
-        <option value="liability">Liability</option>
-      </select>
-      <Input value={item.institutionName} onChange={e => onChange(item.id, "institutionName", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white" data-testid={`input-institution-${item.id}`} />
-      <Input value={item.reportingPeriod} onChange={e => onChange(item.id, "reportingPeriod", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white" placeholder="YYYY-MM" data-testid={`input-period-${item.id}`} />
-      <select value={item.category} onChange={e => onChange(item.id, "category", e.target.value)} className="h-8 rounded-md border px-2 text-sm text-white" style={{ background: CARD2, borderColor: BORDER }} data-testid={`select-category-${item.id}`}>
-        {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-      </select>
-      <select value={item.subcategory} onChange={e => onChange(item.id, "subcategory", e.target.value)} className="h-8 rounded-md border px-2 text-sm text-white" style={{ background: CARD2, borderColor: BORDER }} data-testid={`select-subcategory-${item.id}`}>
-        <option value="">None</option>
-        {SUBCATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-      </select>
-      <Input value={item.name} onChange={e => onChange(item.id, "name", e.target.value)} className={`h-8 bg-white/5 text-white ${invalid ? "border-red-400/50" : "border-white/10"}`} data-testid={`input-name-${item.id}`} />
-      <Input type="number" min={0} value={item.amount} onChange={e => onChange(item.id, "amount", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white text-right" data-testid={`input-current-${item.id}`} />
-      <Input type="number" min={0} value={item.priorValue} onChange={e => onChange(item.id, "priorValue", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white text-right" data-testid={`input-prior-${item.id}`} />
-      <Input type="number" value={item.changeAmount} onChange={e => onChange(item.id, "changeAmount", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white text-right" data-testid={`input-change-${item.id}`} />
-      <button
-        onClick={() => onChange(item.id, "verified", !item.verified)}
-        className="h-8 rounded-md border text-xs font-bold"
-        style={{
-          borderColor: item.verified ? "rgba(74,222,128,0.35)" : BORDER,
-          background: item.verified ? "rgba(74,222,128,0.12)" : "rgba(255,255,255,0.04)",
-          color: item.verified ? GREEN : MUTED,
-        }}
-        data-testid={`button-verify-${item.id}`}
-      >
-        {item.verified ? "Verified" : `${item.confidenceScore}%`}
-      </button>
+      {columns.map(column => <div key={column.key}>{renderCell(column)}</div>)}
       <button onClick={() => onDelete(item.id)} className="text-red-300/60 hover:text-red-300" data-testid={`button-delete-${item.id}`}>
         <Trash2 className="w-4 h-4" />
       </button>
@@ -333,7 +450,21 @@ export default function NetWorth() {
   const [reportingPeriod, setReportingPeriod] = useState(DEFAULT_PERIOD);
   const [selectedInvestor, setSelectedInvestor] = useState("combined");
   const [parsing, setParsing] = useState(false);
+  const [reviewColumns, setReviewColumns] = useState(DEFAULT_REVIEW_COLUMNS);
+  const [selectedColumns, setSelectedColumns] = useState<ReviewColumnKey[]>([]);
+  const [columnTitleDraft, setColumnTitleDraft] = useState("");
+  const [semanticDraft, setSemanticDraft] = useState<SemanticColumnType>("Description");
+  const [currentPeriodTitle, setCurrentPeriodTitle] = useState("Current Period");
+  const [priorPeriodTitle, setPriorPeriodTitle] = useState("Prior Period");
   const isPro = paid(user);
+  const selectedColumn = selectedColumns[0];
+  const reviewGridTemplateColumns = reviewColumns.map(column => {
+    if (column.key === "name") return "minmax(220px,1.4fr)";
+    if (column.key === "verified") return "92px";
+    if (column.key === "type") return "130px";
+    if (column.key === "amount" || column.key === "priorValue" || column.key === "changeAmount") return "140px";
+    return "minmax(140px,1fr)";
+  }).join(" ") + " 44px";
 
   const visibleItems = selectedInvestor === "combined"
     ? allItems
@@ -364,6 +495,55 @@ export default function NetWorth() {
       if (field === "amount" || field === "priorValue") next.changeAmount = String(money(next.amount) - money(next.priorValue));
       return next;
     }));
+  }
+
+  function toggleColumnSelection(key: ReviewColumnKey) {
+    setSelectedColumns(prev => prev.includes(key) ? prev.filter(item => item !== key) : [...prev, key]);
+    const column = reviewColumns.find(item => item.key === key);
+    if (column) {
+      setColumnTitleDraft(column.title);
+      setSemanticDraft(column.semantic);
+    }
+  }
+
+  function renameSelectedColumn() {
+    if (!selectedColumn || !columnTitleDraft.trim()) return;
+    setReviewColumns(prev => prev.map(column => column.key === selectedColumn ? { ...column, title: columnTitleDraft.trim() } : column));
+  }
+
+  function deleteSelectedColumns() {
+    if (selectedColumns.length === 0) return;
+    setReviewColumns(prev => prev.filter(column => !selectedColumns.includes(column.key)));
+    setSelectedColumns([]);
+  }
+
+  function assignSelectedSemantic() {
+    if (!selectedColumn) return;
+    setReviewColumns(prev => prev.map(column => column.key === selectedColumn ? { ...column, semantic: semanticDraft } : column));
+    if (semanticDraft === "Current period value") setCurrentPeriodTitle(columnTitleDraft || "Current Period");
+    if (semanticDraft === "Prior period value") setPriorPeriodTitle(columnTitleDraft || "Prior Period");
+  }
+
+  function mergeSelectedColumns() {
+    if (selectedColumns.length < 2) return;
+    const [target, ...sources] = selectedColumns;
+    const targetColumn = reviewColumns.find(column => column.key === target);
+    const sourceColumns = reviewColumns.filter(column => sources.includes(column.key));
+    const mergedTitle = [targetColumn?.title, ...sourceColumns.map(column => column.title)].filter(Boolean).join(" + ");
+    setReviewItems(prev => prev.map(item => {
+      const next = { ...item };
+      const merged = selectedColumns
+        .map(key => String(next[key as keyof StatementLineItem] ?? "").trim())
+        .filter(Boolean)
+        .join(" ");
+      (next as any)[target] = merged;
+      return next;
+    }));
+    setReviewColumns(prev => prev
+      .filter(column => !sources.includes(column.key))
+      .map(column => column.key === target ? { ...column, title: mergedTitle || column.title } : column));
+    setSelectedColumns([target]);
+    setColumnTitleDraft(mergedTitle);
   }
 
   async function handleFiles(fileList: FileList | null) {
@@ -401,6 +581,9 @@ export default function NetWorth() {
           if (!ocrText.trim()) {
             throw new Error(`${originalName} did not contain readable text. Try a sharper crop or export CSV/XLSX.`);
           }
+          const labels = extractPeriodLabels(ocrText);
+          if (labels.current) setCurrentPeriodTitle(`Current Period - ${labels.current}`);
+          if (labels.prior && labels.prior !== labels.current) setPriorPeriodTitle(`Prior Period - ${labels.prior}`);
           form.append("ocrText", ocrText);
           form.append("originalName", originalName);
         } else {
@@ -600,11 +783,44 @@ export default function NetWorth() {
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-5 border-b" style={{ borderColor: BORDER }}>
               <div>
                 <h2 className="text-xl font-bold text-white">Review Extracted Line Items</h2>
-                <p className="text-sm" style={{ color: MUTED }}>Low-confidence rows are highlighted. Amend values and mark rows verified before generating the statement.</p>
+                <p className="text-sm" style={{ color: MUTED }}>Edit cells, map columns, and mark rows verified before generating the statement.</p>
               </div>
               <Button onClick={() => addManualItem("asset")} variant="outline" className="text-white border" style={{ borderColor: GOLD_BORDER }} data-testid="button-add-review-row">
                 <Plus className="w-4 h-4 mr-1.5" />Add Row
               </Button>
+            </div>
+            <div className="grid lg:grid-cols-[1fr_420px] gap-3 p-4 border-b no-print" style={{ borderColor: BORDER, background: "rgba(255,255,255,0.02)" }}>
+              <div className="flex flex-wrap gap-2">
+                {reviewColumns.map(column => (
+                  <button
+                    key={column.key}
+                    onClick={() => toggleColumnSelection(column.key)}
+                    className="rounded-md border px-3 py-2 text-xs font-semibold"
+                    style={{
+                      borderColor: selectedColumns.includes(column.key) ? GOLD : BORDER,
+                      background: selectedColumns.includes(column.key) ? "rgba(197,163,90,0.14)" : "rgba(255,255,255,0.04)",
+                      color: selectedColumns.includes(column.key) ? GOLD : "white",
+                    }}
+                    data-testid={`button-select-column-${column.key}`}
+                  >
+                    {column.title}
+                  </button>
+                ))}
+              </div>
+              <div className="grid sm:grid-cols-[1fr_1fr] gap-2">
+                <Input value={columnTitleDraft} onChange={e => setColumnTitleDraft(e.target.value)} placeholder="Column title" className="bg-white/5 border-white/10 text-white" data-testid="input-column-title" />
+                <select value={semanticDraft} onChange={e => setSemanticDraft(e.target.value as SemanticColumnType)} className="h-10 rounded-md border px-2 text-sm text-white" style={{ background: CARD2, borderColor: BORDER }} data-testid="select-column-semantic">
+                  {SEMANTIC_COLUMN_TYPES.map(type => <option key={type} value={type}>{type}</option>)}
+                </select>
+                <Button onClick={renameSelectedColumn} variant="outline" className="border text-white" style={{ borderColor: BORDER }} disabled={!selectedColumn} data-testid="button-rename-column">Rename</Button>
+                <Button onClick={assignSelectedSemantic} variant="outline" className="border text-white" style={{ borderColor: BORDER }} disabled={!selectedColumn} data-testid="button-map-column">Map Type</Button>
+                <Button onClick={mergeSelectedColumns} variant="outline" className="border text-white" style={{ borderColor: BORDER }} disabled={selectedColumns.length < 2} data-testid="button-merge-columns">Merge Columns</Button>
+                <Button onClick={deleteSelectedColumns} variant="outline" className="border text-red-200" style={{ borderColor: "rgba(248,113,113,0.4)" }} disabled={selectedColumns.length === 0} data-testid="button-delete-column">Delete Column</Button>
+              </div>
+              <div className="lg:col-span-2 grid sm:grid-cols-2 gap-2">
+                <Input value={currentPeriodTitle} onChange={e => setCurrentPeriodTitle(e.target.value)} className="bg-white/5 border-white/10 text-white" data-testid="input-current-period-title" />
+                <Input value={priorPeriodTitle} onChange={e => setPriorPeriodTitle(e.target.value)} className="bg-white/5 border-white/10 text-white" data-testid="input-prior-period-title" />
+              </div>
             </div>
             {reviewItems.length === 0 ? (
               <div className="p-12 text-center">
@@ -613,10 +829,15 @@ export default function NetWorth() {
               </div>
             ) : (
               <div className="overflow-x-auto">
-                <div className="min-w-[1120px] grid grid-cols-[130px_125px_140px_115px_135px_130px_180px_110px_110px_105px_90px_44px] gap-2 px-3 py-3 text-xs uppercase tracking-wider font-bold" style={{ color: DIM, background: "rgba(255,255,255,0.03)" }}>
-                  <span>Investor</span><span>Status</span><span>Institution</span><span>Period</span><span>Category</span><span>Subcategory</span><span>Description</span><span className="text-right">Current</span><span className="text-right">Prior</span><span className="text-right">Change</span><span>Check</span><span />
+                <div className="min-w-[1120px] grid gap-2 px-3 py-3 text-xs uppercase tracking-wider font-bold" style={{ color: DIM, background: "rgba(255,255,255,0.03)", gridTemplateColumns: reviewGridTemplateColumns }}>
+                  {reviewColumns.map(column => (
+                    <span key={column.key} className={column.align === "right" ? "text-right" : ""}>
+                      {column.key === "amount" ? currentPeriodTitle : column.key === "priorValue" ? priorPeriodTitle : column.title}
+                    </span>
+                  ))}
+                  <span />
                 </div>
-                {reviewItems.map(item => <RowEditor key={item.id} item={item} onChange={updateReviewItem} onDelete={id => setReviewItems(prev => prev.filter(i => i.id !== id))} />)}
+                {reviewItems.map(item => <RowEditor key={item.id} item={item} columns={reviewColumns} onChange={updateReviewItem} onDelete={id => setReviewItems(prev => prev.filter(i => i.id !== id))} />)}
               </div>
             )}
             <div className="flex flex-wrap gap-3 p-5 border-t" style={{ borderColor: BORDER }}>
@@ -687,9 +908,13 @@ export default function NetWorth() {
                                   {Array.from(bySub.entries()).map(([sub, rows]) => (
                                     <div key={sub} className="ml-4 mt-2">
                                       <p className="text-xs font-semibold mb-1" style={{ color: DIM }}>{sub || "Other"}</p>
+                                      <div className="grid grid-cols-[1fr_150px_120px_120px_110px] gap-2 py-1 text-xs font-bold uppercase tracking-wider" style={{ color: DIM }}>
+                                        <span>Description</span><span>Source</span><span className="text-right">{currentPeriodTitle}</span><span className="text-right">{priorPeriodTitle}</span><span className="text-right">Change</span>
+                                      </div>
                                       {rows.map(row => (
-                                        <div key={row.id} className="grid grid-cols-[1fr_110px_110px_110px] gap-2 py-1.5 border-b text-sm" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
-                                          <span className="text-white print-text">{row.name}<span style={{ color: DIM }}> {row.institutionName ? `- ${row.institutionName}` : ""}</span></span>
+                                        <div key={row.id} className="grid grid-cols-[1fr_150px_120px_120px_110px] gap-2 py-1.5 border-b text-sm" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
+                                          <span className="text-white print-text">{row.name}</span>
+                                          <span className="print-text" style={{ color: MUTED }}>{row.institutionName || ""}</span>
                                           <span className="text-right print-text">{fmt(money(row.amount))}</span>
                                           <span className="text-right print-text">{fmt(money(row.priorValue))}</span>
                                           <span className="text-right" style={{ color: money(row.changeAmount) >= 0 ? GREEN : RED }}>{fmt(money(row.changeAmount))}</span>

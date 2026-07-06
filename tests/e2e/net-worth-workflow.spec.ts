@@ -113,12 +113,43 @@ async function uploadSampleStatement(page: Page) {
   ]));
 
   await expect(page.getByText("Review Extracted Line Items")).toBeVisible();
+  await expect(page.getByText("Source", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("Institution", { exact: true })).toHaveCount(0);
   await expect(page.locator('[data-testid^="input-name-"]').nth(0)).toHaveValue("RBC Chequing");
   await expect(page.locator('[data-testid^="input-name-"]').nth(1)).toHaveValue("TD Mortgage");
-  await expect(page.locator('[data-testid^="input-institution-"]').nth(0)).toHaveValue("RBC");
-  await expect(page.locator('[data-testid^="input-institution-"]').nth(1)).toHaveValue("TD");
+  await expect(page.locator('[data-testid^="input-source-"]').nth(0)).toHaveValue("RBC");
+  await expect(page.locator('[data-testid^="input-source-"]').nth(1)).toHaveValue("TD");
+  await expect(page.locator('[data-testid^="input-current-"]').nth(0)).toHaveValue("12,500");
   await expect(page.locator('[data-testid^="select-category-"]').nth(0)).toHaveValue("Bank Accounts");
   await expect(page.locator('[data-testid^="select-category-"]').nth(1)).toHaveValue("Mortgages");
+}
+
+async function exerciseColumnTools(page: Page) {
+  await page.getByTestId("button-select-column-institutionName").click();
+  await page.getByTestId("input-column-title").fill("Source");
+  await page.getByTestId("button-rename-column").click();
+  await page.getByTestId("select-column-semantic").selectOption("Source");
+  await page.getByTestId("button-map-column").click();
+
+  await page.getByTestId("button-select-column-institutionName").click();
+  await page.getByTestId("button-select-column-reportingPeriod").click();
+  await page.getByTestId("button-delete-column").click();
+  await expect(page.getByText("Period", { exact: true })).toHaveCount(0);
+
+  await page.getByTestId("button-select-column-amount").click();
+  await page.getByTestId("input-column-title").fill("Current Period - 28-Feb-2026");
+  await page.getByTestId("select-column-semantic").selectOption("Current period value");
+  await page.getByTestId("button-map-column").click();
+  await page.getByTestId("input-current-period-title").fill("Current Period - 28-Feb-2026");
+  await expect(page.getByText("Current Period - 28-Feb-2026").first()).toBeVisible();
+
+  await page.getByTestId("button-select-column-amount").click();
+  await page.getByTestId("button-select-column-priorValue").click();
+  await page.getByTestId("input-column-title").fill("Prior Period - 31-Jan-2026");
+  await page.getByTestId("select-column-semantic").selectOption("Prior period value");
+  await page.getByTestId("button-map-column").click();
+  await page.getByTestId("input-prior-period-title").fill("Prior Period - 31-Jan-2026");
+  await expect(page.getByText("Prior Period - 31-Jan-2026").first()).toBeVisible();
 }
 
 async function editReviewAndGenerate(page: Page) {
@@ -134,6 +165,7 @@ async function editReviewAndGenerate(page: Page) {
   await page.locator('[data-testid^="button-verify-"]').nth(0).click();
   await page.getByTestId("button-add-review-row").click();
   const nameInputs = page.locator('[data-testid^="input-name-"]');
+  await expect(nameInputs).toHaveCount(3);
   await nameInputs.last().fill("Manual TFSA");
   await page.locator('[data-testid^="input-investor-"]').last().fill("Angelyna");
   await page.locator('[data-testid^="select-type-"]').last().selectOption("asset");
@@ -147,6 +179,7 @@ async function editReviewAndGenerate(page: Page) {
   await expect(report.getByRole("heading", { name: "Statement of Net Worth" })).toBeVisible();
   await expect(page.getByText("Net Worth Variance Analysis")).toBeVisible();
   await expect(page.getByText("Manual TFSA")).toBeVisible();
+  await expect(page.getByText("Source", { exact: true }).first()).toBeVisible();
 }
 
 test.describe("Net Worth workflow", () => {
@@ -157,6 +190,7 @@ test.describe("Net Worth workflow", () => {
     await page.getByTestId("card-module-create-net-worth-statement").click();
     await expect(page).toHaveURL(/\/net-worth/);
     await uploadSampleStatement(page);
+    await exerciseColumnTools(page);
     await editReviewAndGenerate(page);
 
     await page.getByTestId("button-save-net-worth").click();
