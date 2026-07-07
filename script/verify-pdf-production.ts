@@ -20,15 +20,15 @@ async function main() {
 
   const sample = `
 REAL ESTATE
-1177 Yonge St., Toronto 12.50% $ 100,000 $ 800,000 $ - $ 800,000 $ 100,000
-Kingston Westney - Sutton 11.00% $ 283,250 $ 2,800,000 $ 225,000 $ 2,575,000 $ 283,250
-Pond Mills, London, ON $ 158,000 $ - $ - $ - $ 158,000
-JJJ Realty Inc. 16.66% $ 15,000 $ - $ - $ - $ 15,000
-136 Markland Street $ 325,020 $ - $ - $ - $ 361,623
+1177 Yonge St., Toronto 12.50% 100,000 800,000 - 800,000 100,000
+Kingston Westney - Sutton 11.00% 283,250 2,800,000 225,000 2,575,000 283,250
+Pond Mills, London, ON 158,000 - - - 158,000
+JJJ Realty Inc. 16.66% 15,000 - - - 15,000
+136 Markland Street 325,020 - - - 361,623
 INVESTMENTS
-Windstone Property Corp (7661 Ker) 37.50% $ 944,625 $ 944,625
+Windstone Property Corp (7661 Ker) 37.50% 944,625 944,625
 MORTGAGES
-Jorlee - 464Elm Road $ 583,333 $ -
+Jorlee - 464Elm Road 583,333 -
 `;
   const parsed = parseFinancialText(sample);
   const byName = new Map(parsed.items.map(item => [item.name, item]));

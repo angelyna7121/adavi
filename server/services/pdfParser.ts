@@ -25,7 +25,7 @@ type PdfJsModule = {
     promise: Promise<{
       numPages: number;
       getPage: (pageNumber: number) => Promise<{
-        getTextContent: (options?: Record<string, unknown>) => Promise<{ items: Array<{ str?: string }> }>;
+        getTextContent: (options?: Record<string, unknown>) => Promise<{ items: Array<{ str?: string; transform?: number[]; width?: number }> }>;
         cleanup: () => void;
       }>;
       destroy: () => Promise<void>;
@@ -104,6 +104,54 @@ function installPdfJsNodeGlobals() {
   globalScope.Path2D ??= NodePath2D;
 }
 
+type PdfTextItem = { str?: string; transform?: number[]; width?: number };
+
+function reconstructPageText(items: PdfTextItem[]): string {
+  const positioned = items
+    .map((item, index) => ({
+      text: (item.str ?? "").trim(),
+      x: Number(item.transform?.[4] ?? index),
+      y: Number(item.transform?.[5] ?? 0),
+      width: Number(item.width ?? 0),
+      index,
+    }))
+    .filter(item => item.text.length > 0);
+
+  if (positioned.length === 0) return "";
+
+  const sorted = positioned.sort((a, b) => {
+    const yDelta = b.y - a.y;
+    if (Math.abs(yDelta) > 2) return yDelta;
+    return a.x - b.x || a.index - b.index;
+  });
+
+  const rows: Array<{ y: number; items: typeof positioned }> = [];
+  for (const item of sorted) {
+    const row = rows.find(candidate => Math.abs(candidate.y - item.y) <= 2.5);
+    if (row) {
+      row.items.push(item);
+      row.y = (row.y + item.y) / 2;
+    } else {
+      rows.push({ y: item.y, items: [item] });
+    }
+  }
+
+  return rows
+    .sort((a, b) => b.y - a.y)
+    .map(row => {
+      const parts = row.items.sort((a, b) => a.x - b.x || a.index - b.index);
+      let previousRight = 0;
+      return parts.map((part, partIndex) => {
+        const gap = partIndex === 0 ? 0 : part.x - previousRight;
+        previousRight = Math.max(previousRight, part.x + part.width);
+        const spacer = gap > 18 ? "  " : " ";
+        return `${partIndex === 0 ? "" : spacer}${part.text}`;
+      }).join("").replace(/\s+/g, " ").trim();
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
 function getPdfJs(): Promise<PdfJsModule> {
   installPdfJsNodeGlobals();
   pdfJsPromise ??= importPdfJs("pdfjs-dist/legacy/build/pdf.mjs").then((mod) => {
@@ -128,7 +176,7 @@ async function extractPdfTextWithPdfJs(buf: Buffer): Promise<{ text: string; pag
     for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
       const page = await doc.getPage(pageNumber);
       const content = await page.getTextContent({ disableCombineTextItems: false });
-      pageTexts.push(content.items.map((item: any) => item.str ?? "").join(" "));
+      pageTexts.push(reconstructPageText(content.items));
       page.cleanup();
     }
     return { text: pageTexts.join("\n"), pageCount: doc.numPages };
@@ -192,15 +240,22 @@ function amountFromToken(token: string): number | null {
 }
 
 function extractMoneyTokens(text: string): number[] {
-  return Array.from(text.matchAll(/(?:\(\s*\$?\s*[\d,]+(?:\.\d{1,2})?\s*\)|\$?\s*[\d,]+(?:\.\d{1,2})?|-)/g))
-    .map(match => amountFromToken(match[0]))
-    .filter((amount): amount is number => amount !== null);
+  const amounts: number[] = [];
+  for (const match of text.matchAll(/(?:\(\s*\$?\s*[\d,]+(?:\.\d{1,2})?\s*\)|\$?\s*[\d,]+(?:\.\d{1,2})?|-)/g)) {
+    const following = text.slice((match.index ?? 0) + match[0].length);
+    if (/^\s*%/.test(following)) continue;
+    const amount = amountFromToken(match[0]);
+    if (amount !== null) amounts.push(amount);
+  }
+  return amounts;
 }
 
 function parseStatementRow(line: string, context: SectionContext, sectionLabel: SectionLabel): ParsedItem | null {
   const firstCurrency = line.indexOf("$");
   const percentMatch = line.match(/\d+(?:\.\d+)?%/);
+  const firstFormattedAmount = line.search(/\b\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?\b/);
   const labelEndIndex = [firstCurrency, percentMatch?.index ?? -1]
+    .concat(firstCurrency < 0 && !percentMatch ? [firstFormattedAmount] : [])
     .filter(index => index >= 0)
     .sort((a, b) => a - b)[0];
 
@@ -209,7 +264,11 @@ function parseStatementRow(line: string, context: SectionContext, sectionLabel: 
   const label = line.slice(0, labelEndIndex).trim().replace(/[\-_:]+$/, "").trim();
   if (!label || SKIP_LINE_RE.test(label)) return null;
 
-  const valueStartIndex = firstCurrency >= 0 ? firstCurrency : labelEndIndex;
+  const valueStartIndex = firstCurrency >= 0
+    ? firstCurrency
+    : percentMatch?.index !== undefined
+      ? percentMatch.index + percentMatch[0].length
+      : labelEndIndex;
   const values = extractMoneyTokens(line.slice(valueStartIndex));
   if (values.length === 0) return null;
 
