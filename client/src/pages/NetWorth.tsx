@@ -17,13 +17,15 @@ import { Link } from "wouter";
 
 type ItemType = "asset" | "liability";
 type Step = "upload" | "review" | "builder";
+type ColumnTool = "rename" | "delete" | "merge" | "map";
 type ReviewColumnKey =
   | "investorName" | "type" | "institutionName" | "reportingPeriod" | "category" | "subcategory"
-  | "name" | "amount" | "priorValue" | "changeAmount" | "verified";
+  | "name" | "percentInterest" | "fairMarketValue" | "propertyMortgage" | "netValue"
+  | "amount" | "priorValue" | "changeAmount" | "verified";
 type SemanticColumnType =
-  | "Description" | "Source" | "Investor" | "Category" | "Subcategory" | "Asset/Liability status"
-  | "Current period value" | "Prior period value" | "Fair market value" | "Mortgage / debt value"
-  | "Net value" | "Ownership percentage" | "Ignore";
+  | "Category" | "Description" | "Source" | "Investor" | "% Interest"
+  | "Fair Market Value" | "Property Mortgage" | "Net Value"
+  | "Current Period Value" | "Prior Period Value" | "Ignore";
 
 type StatementLineItem = {
   id: string;
@@ -36,6 +38,10 @@ type StatementLineItem = {
   category: string;
   subcategory: string;
   name: string;
+  percentInterest: string;
+  fairMarketValue: string;
+  propertyMortgage: string;
+  netValue: string;
   amount: string;
   priorValue: string;
   changeAmount: string;
@@ -76,22 +82,26 @@ const SUBCATEGORIES = [
 ];
 
 const SEMANTIC_COLUMN_TYPES: SemanticColumnType[] = [
-  "Description", "Source", "Investor", "Category", "Subcategory", "Asset/Liability status",
-  "Current period value", "Prior period value", "Fair market value", "Mortgage / debt value",
-  "Net value", "Ownership percentage", "Ignore",
+  "Category", "Description", "Source", "Investor", "% Interest",
+  "Fair Market Value", "Property Mortgage", "Net Value",
+  "Current Period Value", "Prior Period Value", "Ignore",
 ];
 
 const DEFAULT_REVIEW_COLUMNS: Array<{ key: ReviewColumnKey; title: string; semantic: SemanticColumnType; align?: "right" }> = [
   { key: "investorName", title: "Investor", semantic: "Investor" },
-  { key: "type", title: "Status", semantic: "Asset/Liability status" },
+  { key: "type", title: "Status", semantic: "Ignore" },
   { key: "institutionName", title: "Source", semantic: "Source" },
   { key: "reportingPeriod", title: "Period", semantic: "Ignore" },
   { key: "category", title: "Category", semantic: "Category" },
-  { key: "subcategory", title: "Subcategory", semantic: "Subcategory" },
+  { key: "subcategory", title: "Subcategory", semantic: "Ignore" },
   { key: "name", title: "Description", semantic: "Description" },
-  { key: "amount", title: "Current Period", semantic: "Current period value", align: "right" },
-  { key: "priorValue", title: "Prior Period", semantic: "Prior period value", align: "right" },
-  { key: "changeAmount", title: "Change", semantic: "Net value", align: "right" },
+  { key: "percentInterest", title: "% Int.", semantic: "% Interest" },
+  { key: "fairMarketValue", title: "Fair Market Value", semantic: "Fair Market Value", align: "right" },
+  { key: "propertyMortgage", title: "Property Mortgage", semantic: "Property Mortgage", align: "right" },
+  { key: "netValue", title: "Net Value", semantic: "Net Value", align: "right" },
+  { key: "amount", title: "Current Period", semantic: "Current Period Value", align: "right" },
+  { key: "priorValue", title: "Prior Period", semantic: "Prior Period Value", align: "right" },
+  { key: "changeAmount", title: "Change", semantic: "Net Value", align: "right" },
   { key: "verified", title: "Check", semantic: "Ignore" },
 ];
 
@@ -290,6 +300,10 @@ function blankItem(type: ItemType = "asset"): StatementLineItem {
     category: "Other",
     subcategory: "",
     name: "",
+    percentInterest: "",
+    fairMarketValue: "",
+    propertyMortgage: "",
+    netValue: "",
     amount: "",
     priorValue: "",
     changeAmount: "0",
@@ -316,6 +330,10 @@ function normalizeParsedItem(raw: any): StatementLineItem {
     category: raw.category || "Other",
     subcategory: raw.subcategory || "",
     name: raw.name || "Review item",
+    percentInterest: raw.percentInterest || "",
+    fairMarketValue: String(money(raw.fairMarketValue) || ""),
+    propertyMortgage: String(money(raw.propertyMortgage) || ""),
+    netValue: String(money(raw.netValue) || ""),
     amount: String(amount || ""),
     priorValue: String(priorValue || ""),
     changeAmount: String(money(raw.changeAmount || amount - priorValue)),
@@ -361,7 +379,7 @@ function RowEditor({
     if (column.key === "name") return "minmax(220px,1.4fr)";
     if (column.key === "verified") return "92px";
     if (column.key === "type") return "130px";
-    if (column.key === "amount" || column.key === "priorValue" || column.key === "changeAmount") return "140px";
+    if (column.key === "amount" || column.key === "priorValue" || column.key === "changeAmount" || column.key === "fairMarketValue" || column.key === "propertyMortgage" || column.key === "netValue") return "150px";
     return "minmax(140px,1fr)";
   }).join(" ") + " 44px";
 
@@ -399,6 +417,14 @@ function RowEditor({
         return <Input inputMode="decimal" value={fmtNumber(item.amount)} onChange={e => onChange(item.id, "amount", normalizeMoneyInput(e.target.value))} className="h-8 bg-white/5 border-white/10 text-white text-right" data-testid={`input-current-${item.id}`} />;
       case "priorValue":
         return <Input inputMode="decimal" value={fmtNumber(item.priorValue)} onChange={e => onChange(item.id, "priorValue", normalizeMoneyInput(e.target.value))} className="h-8 bg-white/5 border-white/10 text-white text-right" data-testid={`input-prior-${item.id}`} />;
+      case "percentInterest":
+        return <Input value={item.percentInterest} onChange={e => onChange(item.id, "percentInterest", e.target.value)} className="h-8 bg-white/5 border-white/10 text-white text-right" data-testid={`input-percent-${item.id}`} />;
+      case "fairMarketValue":
+        return <Input inputMode="decimal" value={fmtNumber(item.fairMarketValue)} onChange={e => onChange(item.id, "fairMarketValue", normalizeMoneyInput(e.target.value))} className="h-8 bg-white/5 border-white/10 text-white text-right" data-testid={`input-fair-market-${item.id}`} />;
+      case "propertyMortgage":
+        return <Input inputMode="decimal" value={fmtNumber(item.propertyMortgage)} onChange={e => onChange(item.id, "propertyMortgage", normalizeMoneyInput(e.target.value))} className="h-8 bg-white/5 border-white/10 text-white text-right" data-testid={`input-property-mortgage-${item.id}`} />;
+      case "netValue":
+        return <Input inputMode="decimal" value={fmtNumber(item.netValue)} onChange={e => onChange(item.id, "netValue", normalizeMoneyInput(e.target.value))} className="h-8 bg-white/5 border-white/10 text-white text-right" data-testid={`input-net-value-${item.id}`} />;
       case "changeAmount":
         return <Input inputMode="decimal" value={fmtNumber(item.changeAmount)} onChange={e => onChange(item.id, "changeAmount", normalizeMoneyInput(e.target.value))} className="h-8 bg-white/5 border-white/10 text-white text-right" data-testid={`input-change-${item.id}`} />;
       case "verified":
@@ -452,6 +478,7 @@ export default function NetWorth() {
   const [parsing, setParsing] = useState(false);
   const [reviewColumns, setReviewColumns] = useState(DEFAULT_REVIEW_COLUMNS);
   const [selectedColumns, setSelectedColumns] = useState<ReviewColumnKey[]>([]);
+  const [columnTool, setColumnTool] = useState<ColumnTool | null>(null);
   const [columnTitleDraft, setColumnTitleDraft] = useState("");
   const [semanticDraft, setSemanticDraft] = useState<SemanticColumnType>("Description");
   const [currentPeriodTitle, setCurrentPeriodTitle] = useState("Current Period");
@@ -462,7 +489,7 @@ export default function NetWorth() {
     if (column.key === "name") return "minmax(220px,1.4fr)";
     if (column.key === "verified") return "92px";
     if (column.key === "type") return "130px";
-    if (column.key === "amount" || column.key === "priorValue" || column.key === "changeAmount") return "140px";
+    if (column.key === "amount" || column.key === "priorValue" || column.key === "changeAmount" || column.key === "fairMarketValue" || column.key === "propertyMortgage" || column.key === "netValue") return "150px";
     return "minmax(140px,1fr)";
   }).join(" ") + " 44px";
 
@@ -506,22 +533,40 @@ export default function NetWorth() {
     }
   }
 
+  function openColumnTool(tool: ColumnTool) {
+    setColumnTool(tool);
+    const key = selectedColumns[0] || reviewColumns[0]?.key;
+    if (key && selectedColumns.length === 0) setSelectedColumns([key]);
+    const column = reviewColumns.find(item => item.key === key);
+    if (column) {
+      setColumnTitleDraft(column.title);
+      setSemanticDraft(column.semantic);
+    }
+  }
+
+  function closeColumnTool() {
+    setColumnTool(null);
+  }
+
   function renameSelectedColumn() {
     if (!selectedColumn || !columnTitleDraft.trim()) return;
     setReviewColumns(prev => prev.map(column => column.key === selectedColumn ? { ...column, title: columnTitleDraft.trim() } : column));
+    closeColumnTool();
   }
 
   function deleteSelectedColumns() {
     if (selectedColumns.length === 0) return;
     setReviewColumns(prev => prev.filter(column => !selectedColumns.includes(column.key)));
     setSelectedColumns([]);
+    closeColumnTool();
   }
 
   function assignSelectedSemantic() {
     if (!selectedColumn) return;
     setReviewColumns(prev => prev.map(column => column.key === selectedColumn ? { ...column, semantic: semanticDraft } : column));
-    if (semanticDraft === "Current period value") setCurrentPeriodTitle(columnTitleDraft || "Current Period");
-    if (semanticDraft === "Prior period value") setPriorPeriodTitle(columnTitleDraft || "Prior Period");
+    if (semanticDraft === "Current Period Value") setCurrentPeriodTitle(columnTitleDraft || "Current Period");
+    if (semanticDraft === "Prior Period Value") setPriorPeriodTitle(columnTitleDraft || "Prior Period");
+    closeColumnTool();
   }
 
   function mergeSelectedColumns() {
@@ -544,6 +589,7 @@ export default function NetWorth() {
       .map(column => column.key === target ? { ...column, title: mergedTitle || column.title } : column));
     setSelectedColumns([target]);
     setColumnTitleDraft(mergedTitle);
+    closeColumnTool();
   }
 
   async function handleFiles(fileList: FileList | null) {
@@ -808,15 +854,70 @@ export default function NetWorth() {
                 ))}
               </div>
               <div className="grid sm:grid-cols-[1fr_1fr] gap-2">
-                <Input value={columnTitleDraft} onChange={e => setColumnTitleDraft(e.target.value)} placeholder="Column title" className="bg-white/5 border-white/10 text-white" data-testid="input-column-title" />
-                <select value={semanticDraft} onChange={e => setSemanticDraft(e.target.value as SemanticColumnType)} className="h-10 rounded-md border px-2 text-sm text-white" style={{ background: CARD2, borderColor: BORDER }} data-testid="select-column-semantic">
-                  {SEMANTIC_COLUMN_TYPES.map(type => <option key={type} value={type}>{type}</option>)}
-                </select>
-                <Button onClick={renameSelectedColumn} variant="outline" className="border text-white" style={{ borderColor: BORDER }} disabled={!selectedColumn} data-testid="button-rename-column">Rename</Button>
-                <Button onClick={assignSelectedSemantic} variant="outline" className="border text-white" style={{ borderColor: BORDER }} disabled={!selectedColumn} data-testid="button-map-column">Map Type</Button>
-                <Button onClick={mergeSelectedColumns} variant="outline" className="border text-white" style={{ borderColor: BORDER }} disabled={selectedColumns.length < 2} data-testid="button-merge-columns">Merge Columns</Button>
-                <Button onClick={deleteSelectedColumns} variant="outline" className="border text-red-200" style={{ borderColor: "rgba(248,113,113,0.4)" }} disabled={selectedColumns.length === 0} data-testid="button-delete-column">Delete Column</Button>
+                <Button onClick={() => openColumnTool("rename")} variant="outline" className="border text-white" style={{ borderColor: BORDER }} data-testid="button-rename-column">Rename Column</Button>
+                <Button onClick={() => openColumnTool("map")} variant="outline" className="border text-white" style={{ borderColor: BORDER }} data-testid="button-map-column">Update Selected Column</Button>
+                <Button onClick={() => openColumnTool("merge")} variant="outline" className="border text-white" style={{ borderColor: BORDER }} data-testid="button-merge-columns">Merge Columns</Button>
+                <Button onClick={() => openColumnTool("delete")} variant="outline" className="border text-red-200" style={{ borderColor: "rgba(248,113,113,0.4)" }} data-testid="button-delete-column">Delete Column</Button>
               </div>
+              {columnTool && (
+                <div className="lg:col-span-2 rounded-xl border p-4 grid lg:grid-cols-[1fr_360px] gap-4" style={{ borderColor: GOLD_BORDER, background: "rgba(197,163,90,0.07)" }} data-testid="column-tool-panel">
+                  <div>
+                    <p className="text-sm font-bold text-white mb-2">
+                      {columnTool === "rename" && "Choose one column to rename"}
+                      {columnTool === "delete" && "Choose columns to delete"}
+                      {columnTool === "merge" && "Choose columns to merge"}
+                      {columnTool === "map" && "Choose one column to map"}
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {reviewColumns.map(column => {
+                        const checked = selectedColumns.includes(column.key);
+                        const singleChoice = columnTool === "rename" || columnTool === "map";
+                        return (
+                          <button
+                            key={column.key}
+                            type="button"
+                            onClick={() => {
+                              if (singleChoice) {
+                                setSelectedColumns([column.key]);
+                                setColumnTitleDraft(column.title);
+                                setSemanticDraft(column.semantic);
+                              } else {
+                                toggleColumnSelection(column.key);
+                              }
+                            }}
+                            className="rounded-md border px-3 py-2 text-xs font-semibold"
+                            style={{
+                              borderColor: checked ? GOLD : BORDER,
+                              background: checked ? "rgba(197,163,90,0.18)" : "rgba(255,255,255,0.04)",
+                              color: checked ? GOLD : "white",
+                            }}
+                            data-testid={`tool-column-${column.key}`}
+                          >
+                            {checked ? "✓ " : ""}{column.title}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="grid gap-2 content-start">
+                    {columnTool === "rename" && (
+                      <Input value={columnTitleDraft} onChange={e => setColumnTitleDraft(e.target.value)} placeholder="New column title" className="bg-white/5 border-white/10 text-white" data-testid="input-column-title" />
+                    )}
+                    {columnTool === "map" && (
+                      <select value={semanticDraft} onChange={e => setSemanticDraft(e.target.value as SemanticColumnType)} className="h-10 rounded-md border px-2 text-sm text-white" style={{ background: CARD2, borderColor: BORDER }} data-testid="select-column-semantic">
+                        {SEMANTIC_COLUMN_TYPES.map(type => <option key={type} value={type}>{type}</option>)}
+                      </select>
+                    )}
+                    <div className="flex gap-2">
+                      {columnTool === "rename" && <Button onClick={renameSelectedColumn} className="font-bold" style={{ background: GOLD, color: BG }} disabled={!selectedColumn || !columnTitleDraft.trim()} data-testid="button-apply-rename-column">Apply Rename</Button>}
+                      {columnTool === "map" && <Button onClick={assignSelectedSemantic} className="font-bold" style={{ background: GOLD, color: BG }} disabled={!selectedColumn} data-testid="button-apply-map-column">Apply Mapping</Button>}
+                      {columnTool === "merge" && <Button onClick={mergeSelectedColumns} className="font-bold" style={{ background: GOLD, color: BG }} disabled={selectedColumns.length < 2} data-testid="button-apply-merge-columns">Apply Merge</Button>}
+                      {columnTool === "delete" && <Button onClick={deleteSelectedColumns} className="font-bold" style={{ background: RED, color: "white" }} disabled={selectedColumns.length === 0} data-testid="button-apply-delete-column">Delete Selected</Button>}
+                      <Button onClick={closeColumnTool} variant="outline" className="border text-white" style={{ borderColor: BORDER }} data-testid="button-close-column-tool">Cancel</Button>
+                    </div>
+                  </div>
+                </div>
+              )}
               <div className="lg:col-span-2 grid sm:grid-cols-2 gap-2">
                 <Input value={currentPeriodTitle} onChange={e => setCurrentPeriodTitle(e.target.value)} className="bg-white/5 border-white/10 text-white" data-testid="input-current-period-title" />
                 <Input value={priorPeriodTitle} onChange={e => setPriorPeriodTitle(e.target.value)} className="bg-white/5 border-white/10 text-white" data-testid="input-prior-period-title" />

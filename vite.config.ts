@@ -37,7 +37,7 @@ export default defineConfig({
           if (/[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id)) return "react";
           if (id.includes("/node_modules/@radix-ui/")) return "radix-ui";
           if (/[\\/]node_modules[\\/](recharts|framer-motion)[\\/]/.test(id)) return "visualization";
-          if (/[\\/]node_modules[\\/](xlsx|tesseract\\.js|pdf-parse)[\\/]/.test(id)) return "documents";
+          if (/[\\/]node_modules[\\/](xlsx|tesseract\\.js|pdfjs-dist)[\\/]/.test(id)) return "documents";
           return "vendor";
         },
       },

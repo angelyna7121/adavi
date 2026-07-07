@@ -24,10 +24,19 @@ export interface ParsedItem {
   name: string;
   /** Account/institution column captured separately from the item description. */
   accountName?: string;
+  institutionName?: string;
+  investorName?: string;
+  reportingPeriod?: string;
   category: string;
   type: ItemType;
   /** Whole dollars, always positive. */
   amount: number;
+  priorValue?: number;
+  changeAmount?: number;
+  percentInterest?: string;
+  fairMarketValue?: number;
+  propertyMortgage?: number;
+  netValue?: number;
   notes: string;
   /** True when type, amount, or name is uncertain — user should double-check. */
   needsReview: boolean;

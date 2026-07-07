@@ -1,7 +1,7 @@
 /**
  * PDF text extraction + financial-item parser
  *
- * Uses pdf-parse v2 to pull embedded text from a PDF buffer.
+ * Uses pdfjs-dist in workerless Node mode to pull embedded text from a PDF buffer.
  * If the PDF is image-only (scanned) we attempt OCR via ocrParser.
  * If OCR also yields no text, the result explains the limitation to the user.
  *
@@ -19,17 +19,22 @@ import type { ParsedItem, ParseResult } from "./csvParser.js";
 import { classifyLabel, inferCategoryExported as inferCategory, parseAmount } from "./csvParser.js";
 import { ocrScannedPdfBuffer } from "./ocrParser.js";
 
-type PDFParseConstructor = new (opts: { data: Buffer | Uint8Array }) => {
-  load(): Promise<void>;
-  destroy(): Promise<void>;
-  getText(opts?: { disableCombineTextItems?: boolean }): Promise<{
-    text: string;
-    total: number;
-    pages: Array<{ num: number; text: string }>;
-  }>;
+type PdfJsModule = {
+  GlobalWorkerOptions: { workerSrc: string };
+  getDocument: (options: Record<string, unknown>) => {
+    promise: Promise<{
+      numPages: number;
+      getPage: (pageNumber: number) => Promise<{
+        getTextContent: (options?: Record<string, unknown>) => Promise<{ items: Array<{ str?: string }> }>;
+        cleanup: () => void;
+      }>;
+      destroy: () => Promise<void>;
+    }>;
+  };
 };
 
-let pdfParsePromise: Promise<PDFParseConstructor> | null = null;
+let pdfJsPromise: Promise<PdfJsModule> | null = null;
+const importPdfJs = new Function("specifier", "return import(specifier)") as (specifier: string) => Promise<PdfJsModule>;
 
 class NodeDOMMatrix {
   a = 1;
@@ -99,10 +104,37 @@ function installPdfJsNodeGlobals() {
   globalScope.Path2D ??= NodePath2D;
 }
 
-function getPDFParse(): Promise<PDFParseConstructor> {
+function getPdfJs(): Promise<PdfJsModule> {
   installPdfJsNodeGlobals();
-  pdfParsePromise ??= import("pdf-parse").then((mod) => mod.PDFParse as unknown as PDFParseConstructor);
-  return pdfParsePromise;
+  pdfJsPromise ??= importPdfJs("pdfjs-dist/legacy/build/pdf.mjs").then((mod) => {
+    mod.GlobalWorkerOptions.workerSrc = "";
+    return mod;
+  });
+  return pdfJsPromise;
+}
+
+async function extractPdfTextWithPdfJs(buf: Buffer): Promise<{ text: string; pageCount: number }> {
+  const pdfjs = await getPdfJs();
+  const task = pdfjs.getDocument({
+    data: new Uint8Array(buf),
+    disableWorker: true,
+    useWorkerFetch: false,
+    isEvalSupported: false,
+    useSystemFonts: true,
+  });
+  const doc = await task.promise;
+  try {
+    const pageTexts: string[] = [];
+    for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
+      const page = await doc.getPage(pageNumber);
+      const content = await page.getTextContent({ disableCombineTextItems: false });
+      pageTexts.push(content.items.map((item: any) => item.str ?? "").join(" "));
+      page.cleanup();
+    }
+    return { text: pageTexts.join("\n"), pageCount: doc.numPages };
+  } finally {
+    await doc.destroy();
+  }
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -111,7 +143,7 @@ const AMOUNT_RE =
   /(?<!\d)(?:\([\s]*\$?[\s]*([\d,]+(?:\.\d{1,2})?)\s*\)|-?\$?\s*([\d,]+(?:\.\d{1,2})?))\s*(?:CAD|USD)?(?!\d)/;
 
 const ASSET_SECTION_RE =
-  /\b(assets?|holdings?|investments?|net worth statement|total assets?)\b/i;
+  /\b(assets?|holdings?|investments?|real estate|cash|net worth statement|total assets?)\b/i;
 
 const LIABILITY_SECTION_RE =
   /\b(liabilit(?:y|ies)|debts?|loans? (?:outstanding|owing|balance)|mortgages?)\b/i;
@@ -123,6 +155,7 @@ const MIN_LINE_LENGTH = 5;
 const MIN_AMOUNT = 1;
 
 type SectionContext = "asset" | "liability" | "unknown";
+type SectionLabel = "Real Estate" | "Investments" | "Mortgages" | "Other";
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -144,6 +177,72 @@ function matchToAmount(match: RegExpExecArray): number {
   return parseAmount(match[2] ?? "");
 }
 
+function inferSectionLabel(line: string, fallback: SectionLabel): SectionLabel {
+  if (/\breal estate\b/i.test(line)) return "Real Estate";
+  if (/\binvestments?\b/i.test(line)) return "Investments";
+  if (/\bmortgages?\b/i.test(line)) return "Mortgages";
+  return fallback;
+}
+
+function amountFromToken(token: string): number | null {
+  const cleaned = token.replace(/\$/g, "").trim();
+  if (!cleaned || cleaned === "-") return null;
+  const value = parseAmount(cleaned);
+  return Number.isFinite(value) ? Math.abs(Math.round(value)) : null;
+}
+
+function extractMoneyTokens(text: string): number[] {
+  return Array.from(text.matchAll(/(?:\(\s*\$?\s*[\d,]+(?:\.\d{1,2})?\s*\)|\$?\s*[\d,]+(?:\.\d{1,2})?|-)/g))
+    .map(match => amountFromToken(match[0]))
+    .filter((amount): amount is number => amount !== null);
+}
+
+function parseStatementRow(line: string, context: SectionContext, sectionLabel: SectionLabel): ParsedItem | null {
+  const firstCurrency = line.indexOf("$");
+  const percentMatch = line.match(/\d+(?:\.\d+)?%/);
+  const labelEndIndex = [firstCurrency, percentMatch?.index ?? -1]
+    .filter(index => index >= 0)
+    .sort((a, b) => a - b)[0];
+
+  if (labelEndIndex === undefined || labelEndIndex <= 0) return null;
+
+  const label = line.slice(0, labelEndIndex).trim().replace(/[\-_:]+$/, "").trim();
+  if (!label || SKIP_LINE_RE.test(label)) return null;
+
+  const valueStartIndex = firstCurrency >= 0 ? firstCurrency : labelEndIndex;
+  const values = extractMoneyTokens(line.slice(valueStartIndex));
+  if (values.length === 0) return null;
+
+  const currentValue = values.length > 1 ? values[values.length - 1] : values[0];
+  const priorValue = values.length > 1 ? values[0] : currentValue;
+  const fairMarketValue = values.length >= 5 ? values[1] : undefined;
+  const propertyMortgage = values.length >= 5 ? values[2] : undefined;
+  const netValue = values.length >= 5 ? values[3] : undefined;
+  if (Math.abs(currentValue) < MIN_AMOUNT && Math.abs(priorValue) < MIN_AMOUNT) return null;
+
+  const type: "asset" | "liability" = context === "liability" ? "liability" : "asset";
+  const category = sectionLabel === "Mortgages" ? "Mortgages" : sectionLabel === "Other" ? inferCategory(label) : sectionLabel;
+
+  return {
+    tempId: tempId(),
+    name: label,
+    category,
+    type,
+    amount: currentValue,
+    priorValue,
+    changeAmount: currentValue - priorValue,
+    percentInterest: percentMatch?.[0],
+    fairMarketValue,
+    propertyMortgage,
+    netValue,
+    notes: "",
+    needsReview: true,
+    reviewReason: "Extracted from PDF statement table - verify column mapping and values",
+    confidenceScore: 0.78,
+    sourceTextSnippet: line.slice(0, 180),
+  };
+}
+
 // ── Shared text → financial items parser ──────────────────────────────────────
 
 export interface TextParseResult {
@@ -163,6 +262,7 @@ export function parseFinancialText(rawText: string): TextParseResult {
   let skippedRows = 0;
   const warnings: string[] = [];
   let context: SectionContext = "unknown";
+  let sectionLabel: SectionLabel = "Other";
 
   for (const rawLine of rawText.split(/\n/)) {
     const line = cleanLine(rawLine);
@@ -172,17 +272,25 @@ export function parseFinancialText(rawText: string): TextParseResult {
     // Section header detection — no amount on the same line
     if (ASSET_SECTION_RE.test(line) && !AMOUNT_RE.test(line)) {
       context = /liabilit/i.test(line) ? "liability" : "asset";
+      sectionLabel = inferSectionLabel(line, sectionLabel);
       skippedRows++;
       continue;
     }
     if (LIABILITY_SECTION_RE.test(line) && !AMOUNT_RE.test(line)) {
       context = "liability";
+      sectionLabel = inferSectionLabel(line, sectionLabel);
       skippedRows++;
       continue;
     }
 
     // Skip total / summary rows
     if (SKIP_LINE_RE.test(line)) { skippedRows++; continue; }
+
+    const statementRow = parseStatementRow(line, context, sectionLabel);
+    if (statementRow) {
+      items.push(statementRow);
+      continue;
+    }
 
     const match = AMOUNT_RE.exec(line);
     if (!match) { skippedRows++; continue; }
@@ -253,21 +361,15 @@ export function parseFinancialText(rawText: string): TextParseResult {
  * can be retrieved. Used by the AI extraction pipeline.
  */
 export async function extractPdfText(buf: Buffer): Promise<string> {
-  let parser: InstanceType<PDFParseConstructor> | null = null;
   try {
-    const PDFParse = await getPDFParse();
-    parser = new PDFParse({ data: buf });
-    await parser.load();
-    const result = await parser.getText({ disableCombineTextItems: false });
+    const result = await extractPdfTextWithPdfJs(buf);
     const text = (result.text ?? "").replace(/\s+/g, " ").trim();
     if (text.length >= 20) return text;
     // Scanned PDF — fall through to OCR
-    const ocrText = await ocrScannedPdfBuffer(buf, result.total ?? 1);
+    const ocrText = await ocrScannedPdfBuffer(buf, result.pageCount ?? 1);
     return ocrText.replace(/\s+/g, " ").trim();
   } catch {
     return "";
-  } finally {
-    await parser?.destroy().catch(() => {});
   }
 }
 
@@ -289,19 +391,13 @@ export async function parsePDFBuffer(buf: Buffer): Promise<PdfParseResult> {
   let rawText = "";
   let extractionFailed = false;
 
-  let parser: InstanceType<PDFParseConstructor> | null = null;
   try {
-    const PDFParse = await getPDFParse();
-    parser = new PDFParse({ data: buf });
-    await parser.load();
-    const result = await parser.getText({ disableCombineTextItems: false });
+    const result = await extractPdfTextWithPdfJs(buf);
     rawText = result.text ?? "";
-    pageCount = result.total ?? 1;
+    pageCount = result.pageCount ?? 1;
   } catch (err: any) {
     extractionFailed = true;
     warnings.push(`PDF text extraction error: ${err?.message ?? "unknown error"}`);
-  } finally {
-    await parser?.destroy().catch(() => {});
   }
 
   const strippedText = rawText.replace(/\s+/g, " ").trim();

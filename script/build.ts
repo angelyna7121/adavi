@@ -23,7 +23,7 @@ const allowlist = [
   "openai",
   "passport",
   "passport-local",
-  "pdf-parse",
+  "pdfjs-dist",
   "pg",
   "stripe",
   "tesseract.js",

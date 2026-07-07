@@ -19,7 +19,7 @@ export default defineConfig({
     video: "retain-on-failure",
   },
   webServer: {
-    command: "pnpm run dev",
+    command: "corepack pnpm exec tsx server/index.ts",
     url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

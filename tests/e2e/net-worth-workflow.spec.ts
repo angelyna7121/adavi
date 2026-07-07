@@ -1,9 +1,26 @@
 import { expect, test, type Page } from "@playwright/test";
 import pg from "pg";
+import { parseFinancialText } from "../../server/services/pdfParser";
 
 const { Pool } = pg;
 
 const password = "AdaviE2E!2026";
+const empireStatementText = [
+  "EMPIRE MILLING LIMITED",
+  "NET WORTH",
+  "February 28, 2026",
+  "REAL ESTATE",
+  "1177 Yonge St., Toronto 12.50% $ 100,000 $ 800,000 $ - $ 800,000 $ 100,000",
+  "Kingston Westney - Sutton 11.00% $ 283,250 $ 2,800,000 $ 225,000 $ 2,575,000 $ 283,250",
+  "Pond Mills, London, ON $ 158,000 $ - $ - $ - $ 158,000",
+  "JJJ Realty Inc. 16.66% $ 15,000 $ - $ - $ - $ 15,000",
+  "136 Markland Street $ 325,020 $ - $ - $ - $ 361,623",
+  "Total Real Estate $ 881,270 $ 917,873",
+  "INVESTMENTS",
+  "Windstone Property Corp (7661 Ker) 37.50% $ 944,625 $ 944,625",
+  "MORTGAGES",
+  "Jorlee - 464Elm Road $ 583,333 $ -",
+].join("\n");
 
 function uniqueEmail(prefix: string) {
   const runId = process.env.E2E_RUN_ID || "local";
@@ -124,32 +141,80 @@ async function uploadSampleStatement(page: Page) {
   await expect(page.locator('[data-testid^="select-category-"]').nth(1)).toHaveValue("Mortgages");
 }
 
-async function exerciseColumnTools(page: Page) {
-  await page.getByTestId("button-select-column-institutionName").click();
-  await page.getByTestId("input-column-title").fill("Source");
-  await page.getByTestId("button-rename-column").click();
-  await page.getByTestId("select-column-semantic").selectOption("Source");
-  await page.getByTestId("button-map-column").click();
+test("net worth parser preserves statement descriptions and period values", () => {
+  const parsed = parseFinancialText(empireStatementText);
+  const rows = new Map(parsed.items.map(item => [item.name, item]));
 
-  await page.getByTestId("button-select-column-institutionName").click();
-  await page.getByTestId("button-select-column-reportingPeriod").click();
+  expect(rows.get("1177 Yonge St., Toronto")).toEqual(expect.objectContaining({
+    category: "Real Estate",
+    priorValue: 100000,
+    amount: 100000,
+    fairMarketValue: 800000,
+    netValue: 800000,
+    percentInterest: "12.50%",
+  }));
+
+  expect(rows.get("Kingston Westney - Sutton")).toEqual(expect.objectContaining({
+    priorValue: 283250,
+    amount: 283250,
+    fairMarketValue: 2800000,
+    propertyMortgage: 225000,
+    netValue: 2575000,
+    percentInterest: "11.00%",
+  }));
+
+  expect(rows.get("Pond Mills, London, ON")).toEqual(expect.objectContaining({
+    priorValue: 158000,
+    amount: 158000,
+  }));
+  expect(rows.get("Windstone Property Corp (7661 Ker)")).toBeTruthy();
+  expect(rows.get("Jorlee - 464Elm Road")).toEqual(expect.objectContaining({
+    category: "Mortgages",
+    type: "liability",
+  }));
+  expect(parsed.items.find(item => /^Total |Net Worth/i.test(item.name))).toBeFalsy();
+});
+
+async function exerciseColumnTools(page: Page) {
+  await page.getByTestId("button-rename-column").click();
+  await expect(page.getByTestId("column-tool-panel")).toBeVisible();
+  await page.getByTestId("tool-column-institutionName").click();
+  await page.getByTestId("input-column-title").fill("Source");
+  await page.getByTestId("button-apply-rename-column").click();
+
+  await page.getByTestId("button-map-column").click();
+  await expect(page.getByTestId("column-tool-panel")).toBeVisible();
+  await page.getByTestId("tool-column-institutionName").click();
+  await page.getByTestId("select-column-semantic").selectOption("Source");
+  await page.getByTestId("button-apply-map-column").click();
+
   await page.getByTestId("button-delete-column").click();
+  await expect(page.getByTestId("column-tool-panel")).toBeVisible();
+  await page.getByTestId("tool-column-reportingPeriod").click();
+  await page.getByTestId("button-apply-delete-column").click();
   await expect(page.getByText("Period", { exact: true })).toHaveCount(0);
 
-  await page.getByTestId("button-select-column-amount").click();
-  await page.getByTestId("input-column-title").fill("Current Period - 28-Feb-2026");
-  await page.getByTestId("select-column-semantic").selectOption("Current period value");
   await page.getByTestId("button-map-column").click();
+  await expect(page.getByTestId("column-tool-panel")).toBeVisible();
+  await page.getByTestId("tool-column-amount").click();
+  await page.getByTestId("select-column-semantic").selectOption("Current Period Value");
+  await page.getByTestId("button-apply-map-column").click();
   await page.getByTestId("input-current-period-title").fill("Current Period - 28-Feb-2026");
   await expect(page.getByText("Current Period - 28-Feb-2026").first()).toBeVisible();
 
-  await page.getByTestId("button-select-column-amount").click();
-  await page.getByTestId("button-select-column-priorValue").click();
-  await page.getByTestId("input-column-title").fill("Prior Period - 31-Jan-2026");
-  await page.getByTestId("select-column-semantic").selectOption("Prior period value");
   await page.getByTestId("button-map-column").click();
+  await expect(page.getByTestId("column-tool-panel")).toBeVisible();
+  await page.getByTestId("tool-column-priorValue").click();
+  await page.getByTestId("select-column-semantic").selectOption("Prior Period Value");
+  await page.getByTestId("button-apply-map-column").click();
   await page.getByTestId("input-prior-period-title").fill("Prior Period - 31-Jan-2026");
   await expect(page.getByText("Prior Period - 31-Jan-2026").first()).toBeVisible();
+
+  await page.getByTestId("button-merge-columns").click();
+  await expect(page.getByTestId("column-tool-panel")).toBeVisible();
+  await page.getByTestId("tool-column-amount").click();
+  await page.getByTestId("tool-column-priorValue").click();
+  await page.getByTestId("button-close-column-tool").click();
 }
 
 async function editReviewAndGenerate(page: Page) {
